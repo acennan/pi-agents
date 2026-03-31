@@ -1,0 +1,8 @@
+*.iml
+.idea/
+node_modules/
+.beads/
+.claude/
+*.d.ts
+*.d.ts.map
+*.js.map

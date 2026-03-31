@@ -1,0 +1,41 @@
+{
+  "name": "pi-agents",
+  "version": "1.0.0",
+  "description": "",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch:build": "tsc --watch",
+    "lint": "eslint 'extensions/**/*.ts' --ignore-pattern '**/__tests__/*'",
+    "typecheck": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm run lint",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acennan/pi-agents.git"
+  },
+  "author": "Damian Jackson",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/acennan/pi-agents/issues"
+  },
+  "homepage": "https://github.com/acennan/pi-agents#readme",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.5.0",
+    "eslint": "^10.0.3",
+    "globals": "^17.4.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.57.0",
+    "vitest": "^4.1.0"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "^0.64.0",
+    "@mariozechner/pi-coding-agent": "^0.64.0",
+    "@mariozechner/pi-tui": "^0.64.0"
+  }
+}

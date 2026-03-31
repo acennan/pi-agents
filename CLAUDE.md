@@ -1,0 +1,5 @@
+# Project Guidelines
+
+---
+
+@AGENTS.md
