@@ -1,6 +1,76 @@
 # Proposed Changes to Support Autonomous Teams
 
+---
+
+Changes to the structure. 
+- Only the coders are persistent agents. 
+- The reviewer should be a sub-agent created whenever the leader is informed that a coder agent has completed. 
+- This makes the reviewer, simplifier and merger all sub-agents.
+
+Change in nomenclature.
+- coder agent → code agent
+- simplifier agent → simplify agent
+- reviewer agent → review agent
+- committer agent → commit agent
+
+The team configuration would change to
+```yaml
+name: <team template name>
+description: <team description>
+tools:
+  - <tool name>
+model: <model name>
+thinking: <thinking level>
+agents:
+  - name: code-<N>
+    description: Default code agent
+    type: default-code-agent
+    tools:
+      - <tool name>
+    model: <model name>
+    thinking: <thinking level>
+    promptTemplate: <prompt template filename>
+sub-agents:
+  - nameTemplate: review
+    description: Default code reviewer agent
+    type: default-review-agent
+    maxAllowed: 1
+    tools:
+      - <tool name>
+    model: <model name>
+    thinking: <thinking level>
+    promptTemplate: <prompt template filename>
+  - name: simplify
+    description: Default code simplifier agent
+    type: default-simplify-agent
+    maxAllowed: 1
+    tools:
+      - <tool name>
+    model: <model name>
+    thinking: <thinking level>
+    prompt: <prompt template filename>
+  - name: commit
+    description: Default code committer agent
+    type: default-commit-agent
+    maxAllowed: 1
+    tools:
+      - <tool name>
+    model: <model name>
+    thinking: <thinking level>
+    promptTemplate: <prompt template filename>
+```
+The structure is split into `agents` and `sub-agents`. Agents are created on team startup and last the lifetime of the team. While `sub-agents` are created when required and exist only until their task is complete.
+
+Sub-agents are limited in how many there can be at any one time via `maxAllowed`.
+
+The `nameTemplate` is used to construct the individual agent name based on the agent number. For example, code-1, code-2 etc.
+
+The existing 
+
+---
+
 The purpose of this change is to create a new extension for the Pi agent that will enable a user to create autonomous teams that can be tasked to implement code changes.
+
 
 ## Commands
 
@@ -174,24 +244,36 @@ When a coder agent selects a task:
 3. The coder makes all code changes within that worktree.
 
 Once the code change for a task has been completed, the coder agent should:
-- Create a Markdown summary file named `task-<id>-summary.md` (using the current task's ID, not the parent's) in the `~/.pi/teams/<team-name>/summaries` directory. The reviewer will later append their findings to this same file, so the final summary contains both the code change description and the review outcome. For remedial tasks working in an existing worktree, this creates a new summary file alongside any existing ones from previous iterations.
+- Create a Markdown summary file named `task-<id>-summary.md` (using the current task's ID, not the parent's) in the `~/.pi/teams/<team-name>/summaries` directory. Any agent that carries out subsequent work for this ticket will append their findings to the same file, so that it contains a description of all work undertaken for a given task.
 - Commit the task changes to the task branch.
 - Send a message to the leader agent to inform them that the task has been completed. This message should include the task identifier and the full list of files touched by the task so that reviewers know exactly which files to inspect.
 - Leave the task as `in_progress`. The task will be marked `closed` by the merger after a successful merge to `main`.
 
 The coding agent is now finished with this task. The agent's context should be cleared by creating a new session within the same process, equivalent to `/clear`, and it can then select a new task.
 
-### Leader Coordination
+### Simplifier Workflow
 
-**On coder completion:** When the leader receives a code-change-complete message, it spawns a simplifier sub-agent, passing the task identifier, the task worktree path, and the list of files touched by the task.
+The simplifier is an ephemeral sub-agent spawned by the leader after coder completion. It runs inside the existing task worktree and commits to the same task branch, so the reviewer sees the coder's change and any simplifications as a single coherent unit. It is not a standing team member.
 
-**On simplifier completion:** Whether or not the simplifier made changes, the leader broadcasts a review notification to all `reviewer` agents. The notification includes the task identifier, the task worktree path, and the full list of files touched (union of coder and simplifier changes). Reviewers race to claim the review. The leader updates the UI based on start and finish messages from agents.
+When the leader spawns a simplifier, it passes:
+- the task identifier
+- the task worktree path
+- the list of files changed by the coder
+- the team summaries directory
 
-**On reviewer approval:** When the leader receives a review-approved message, it tags the task in beads with `reviewer-approved` and adds it to an internal merge queue. The beads tag ensures that approved tasks survive a team restart and can be used to reconstruct the queue. The leader processes the merge queue sequentially — only one merger sub-agent may be active at a time — to avoid git conflicts between concurrent merges. The leader spawns a merger sub-agent for the next queued task when the previous merger has finished.
+The simplifier then:
+1. Runs the `code-simplifier` skill scoped to the changed file list within the task worktree, paying particular attention to the coder changes.
 
-**On merger success:** The leader marks the task as `closed` in beads and logs the event.
+If improvements are identified:
+- Makes the changes in the worktree.
+- Commits the changes to the task branch. The commit message should make clear this is a simplification pass.
+- Appends a simplification section to the existing task summary file, describing the changes made.
+- Informs the leader of the updated file list (union of coder and simplifier changes).
+- Exits.
 
-**On merger failure:** The leader leaves the task as `in_progress`, appends an event to the log, and notifies the user with the reason. The worktree and branch are left intact for manual inspection. Once merge conflicts arise, resolution is the user's responsibility: they should merge the branch, delete the worktree, and update the task state in beads directly.
+If no improvements are found:
+- Informs the leader that no changes were needed.
+- Exits. No summary changes are made.
 
 ### Reviewer Workflow
 
@@ -248,29 +330,17 @@ The merger then:
 
 The merger has no persistent state and no beads interaction. Task state transitions are performed by the leader. Pushing to a remote is not the merger's responsibility; the user controls remote synchronisation.
 
-### Code Simplifier Workflow
+### Leader Coordination
 
-The simplifier is an ephemeral sub-agent spawned by the leader after coder completion. It runs inside the existing task worktree and commits to the same task branch, so the reviewer sees the coder's change and any simplifications as a single coherent unit. It is not a standing team member.
+**On coder completion:** When the leader receives a code-change-complete message, it spawns a simplifier sub-agent, passing the task identifier, the task worktree path, and the list of files touched by the task.
 
-When the leader spawns a simplifier, it passes:
-- the task identifier
-- the task worktree path
-- the list of files changed by the coder
-- the team summaries directory
+**On simplifier completion:** Whether or not the simplifier made changes, the leader broadcasts a review notification to all `reviewer` agents. The notification includes the task identifier, the task worktree path, and the full list of files touched (union of coder and simplifier changes). Reviewers race to claim the review. The leader updates the UI based on start and finish messages from agents.
 
-The simplifier then:
-1. Runs the `code-simplifier` skill scoped to the changed file list within the task worktree.
+**On reviewer approval:** When the leader receives a review-approved message, it tags the task in beads with `reviewer-approved` and adds it to an internal merge queue. The beads tag ensures that approved tasks survive a team restart and can be used to reconstruct the queue. The leader processes the merge queue sequentially — only one merger sub-agent may be active at a time — to avoid git conflicts between concurrent merges. The leader spawns a merger sub-agent for the next queued task when the previous merger has finished.
 
-If improvements are identified:
-- Makes the changes in the worktree.
-- Commits the changes to the task branch. The commit message should make clear this is a simplification pass.
-- Appends a simplification section to the task summary file (`task-<id>-summary.md`) describing the changes made.
-- Informs the leader of the updated file list (union of coder and simplifier changes).
-- Exits.
+**On merger success:** The leader marks the task as `closed` in beads and logs the event.
 
-If no improvements are found:
-- Informs the leader that no changes were needed.
-- Exits. No summary changes are made.
+**On merger failure:** The leader leaves the task as `in_progress`, appends an event to the log, and notifies the user with the reason. The worktree and branch are left intact for manual inspection. Once merge conflicts arise, resolution is the user's responsibility: they should merge the branch, delete the worktree, and update the task state in beads directly.
 
 ## Agent Prompts
 
@@ -396,9 +466,11 @@ Ephemeral agents (merger, simplifier) use the same mailbox system. The leader cr
 
 It is important that messages do not get lost, so agents must obtain an exclusive lock on the mailbox file before appending messages or advancing read cursors.
 
+The message subject should play the role of the message type, which should be standardised. For example, something like `task-25-coding-complete` or `task-16-merge-complete`.
+
 ## File Locking
 
-To prevent data loss, any file that can be accessed by multiple agents must be locked before reading or writing. File locking must use the `proper-lockfile` npm package, which is already used elsewhere in the codebase, for example `auth-storage.ts` and `settings-manager.ts`. This package handles stale lock detection, cross-process locking, and retry logic consistently with the rest of the application.
+To prevent data loss, any file that can be accessed by multiple agents must be locked before reading or writing. File locking must use the `proper-lockfile` npm package. This package handles stale lock detection, cross-process locking, and retry logic consistently with the rest of the application.
 
 ## Branch and Worktree Semantics
 
@@ -429,9 +501,9 @@ When a team is active, the normal chat area is replaced by a **team dashboard** 
 │   merger       ◆ Running    task-25             │
 ├─────────────────────────────────────────────────┤
 │  TASKS                                          │
-│   #27 ⚙️ Simplifying  (simplifier)              │
+│   #27 ✏️️ Simplifying  (simplifier)              │
 │   #26 🔍 In review    (reviewer-1)              │
-│   #25 ⏫ Merging      (merger)                  │
+│   #25 🔗 Merging      (merger)                  │
 │   #24 ✅ Complete                               │
 ├─────────────────────────────────────────────────┤
 │  EVENT LOG                                      │
@@ -449,7 +521,7 @@ When a team is active, the normal chat area is replaced by a **team dashboard** 
 
 **Agents panel** — one row per agent showing name, a status indicator, the status label, and the current task ID if working. Standing agents use `●` (green for Working, dim for Idle, red for Crashed). Ephemeral agents (merger, simplifier) use `◆` (cyan) and are shown only while active; they disappear from the panel when they exit. Agent name column is fixed-width, padded to the longest name. If more agents exist than can fit vertically, a `... and N more` line appears in muted text.
 
-**Tasks panel** — one row per task showing ID, a status icon, status label, and assignee in parentheses when assigned. Active tasks appear first; completed tasks are collapsed into a summary line (`✓ N completed tasks`) when they would overflow. Status icons: `○` pending, `⏳` coding, `⚙` simplifying, `👁` in review, `↑` merging, `✓` complete, `✗` blocked.
+**Tasks panel** — one row per task showing ID, a status icon, status label, and assignee in parentheses when assigned. Active tasks appear first; completed tasks are collapsed into a summary line (`✓ N completed tasks`) when they would overflow. Status icons: `⏳` pending, `⚙️` coding, `✏️` simplifying, `🔍` in review, `🔗` merging, `✅` complete, `⛔️` blocked.
 
 **Event log** — timestamped `HH:MM` entries rendered from a ring buffer with capacity 50. Only the most recent entries that fit the available vertical space are shown, with a minimum of 3. The section header shows a scroll position indicator (`[8–12 of 31]`) when scrolled away from the bottom.
 
@@ -491,7 +563,7 @@ The following bindings are only active when `teamModeActive` is true:
 
 ## Example Extensions
 
-The code contains a number of example extensions that demonstrate the use of the Pi agent. These can be found under `packages/coding-agent/examples/extensions`.
+The code contains a number of example extensions that demonstrate the use of the Pi agent. These can be found under `../pi-mono/packages/coding-agent/examples/extensions`.
 
 ## Future Work
 
