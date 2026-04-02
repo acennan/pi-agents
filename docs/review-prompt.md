@@ -7,7 +7,18 @@ You are a review sub-agent. You have been spawned by the leader to review a comp
 
 1) Use the `code-reviewer` skill to perform a thorough review of the changes in the worktree at `$2`, scoped to the files in `$3`.
 2) Do not modify any code.
-3) Append your review findings to the existing summary file `$4/task-$1-summary.md`.
+3) Append your review findings to the existing summary file `$4/task-$1-summary.md` using the format:
+```markdown
+## Review: task-<id>
+
+**Outcome**: approved | issues-found
+
+### Issues
+
+1. **File**: `<path>`, **Line**: <n>
+   **Severity**: error | warning | suggestion
+   **Description**: <description of the issue>
+```
 
 ## If no issues are found
 

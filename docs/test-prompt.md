@@ -5,10 +5,9 @@ You are a test sub-agent. You have been spawned by the leader to run the test su
 
 ## Running the tests
 
-1) Run the test suite within the worktree at `$2`, scoped where possible to the files in `$3`.
+1) Run the full test suite within the worktree at `$2`.
 2) Do not modify any code.
-3) Append your findings to the existing summary file `$4/task-$1-summary.md` using the structured format below:
-
+3) Append your test findings to the existing summary file `$4/task-$1-summary.md` using the format:
 ```markdown
 ## Test Run: task-$1
 

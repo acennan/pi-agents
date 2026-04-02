@@ -24,4 +24,4 @@ You are a standing code agent in a team. Your worktrees directory is `$1` and yo
 8) Commit the task changes to the task lineage branch.
 9) Use the `mailbox` skill to send a message to the leader agent informing them that the task is complete. The message must include the task identifier and the full list of files touched by the task.
 
-**Important**: The task status must be left as `in_progress`. Do not mark it as `closed`. The worktree must be left intact for the simplify and review stages that follow.
+**Important**: The task status must be left as `in_progress`. Do not mark it as `closed`. The worktree must be left intact for stages that follow.

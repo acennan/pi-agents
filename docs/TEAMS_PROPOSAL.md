@@ -76,9 +76,9 @@ Teams can only be restarted from the same workspace they were created in. The ch
 
 If another team is already active in the current session, `/team restart` must fail.
 
-Restart is not an attach mechanism for a team created in another leader session.
+Restart is not an attachment mechanism for a team created in another leader session.
 
-If the previous shutdown was unclean and tasks remain `in_progress`, those tasks should be reported to the user so they can decide what action to take. Tasks tagged `test-passed` in beads should be re-added to the integration queue automatically, since their review and tests are complete and they only need integration into `main`.
+If the previous shutdown was unclean and tasks remain `in_progress`, those tasks should be reported to the user so they can decide what action to take. Tasks tagged `test-passed` in beads should be re-added to the integration queue automatically, since their review and tests are complete, and they only need integration into `main`.
 
 ### delete
 
