@@ -6,3 +6,6 @@ node_modules/
 *.d.ts
 *.d.ts.map
 *.js.map
+
+# bv (beads viewer) local config and caches
+.bv/
