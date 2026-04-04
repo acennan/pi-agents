@@ -152,7 +152,6 @@ export default function jdocmunchExtension(pi: ExtensionAPI) {
       const changed = (result.changed as number) ?? 0;
       const newFiles = (result.new as number) ?? 0;
       const deleted = (result.deleted as number) ?? 0;
-      console.log(`jdocmunch: ${JSON.stringify(result, null, 2)}`);
       ctx.ui.setStatus(
         "jdocmunch",
         theme.fg(

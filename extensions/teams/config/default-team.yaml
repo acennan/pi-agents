@@ -1,0 +1,72 @@
+# Default team configuration.
+#
+# Uses the documented YAML shape:
+# - `sub-agents` at the top level
+# - plain `nameTemplate` prefixes (e.g. `code` -> `code-1`)
+# - documented `default-*-agent` type names
+# - explicit tool lists for every entry
+
+name: default-team
+description: The default team used when no user configuration has been supplied.
+
+agents:
+  - nameTemplate: code
+    description: A code agent that will implement a code change
+    type: default-code-agent
+    count: 2
+    tools:
+      - read
+      - write
+      - edit
+      - bash
+      - grep
+      - find
+      - ls
+    promptTemplate: code-prompt.md
+
+sub-agents:
+  - nameTemplate: review
+    description: A review agent that will review a code change
+    type: default-review-agent
+    maxAllowed: 1
+    tools:
+      - read
+      - grep
+      - find
+      - ls
+    promptTemplate: review-prompt.md
+
+  - nameTemplate: simplify
+    description: A simplify agent that will simplify a code change
+    type: default-simplify-agent
+    maxAllowed: 1
+    tools:
+      - read
+      - write
+      - edit
+      - bash
+      - grep
+      - find
+      - ls
+    promptTemplate: simplify-prompt.md
+
+  - nameTemplate: test
+    description: A test agent that will run the test suite against a reviewed change
+    type: default-test-agent
+    maxAllowed: 1
+    tools:
+      - read
+      - bash
+      - grep
+      - find
+      - ls
+    promptTemplate: test-prompt.md
+
+  - nameTemplate: commit
+    description: A commit agent that will integrate a task lineage branch into main
+    type: default-commit-agent
+    maxAllowed: 1
+    tools:
+      - read
+      - bash
+    promptTemplate: commit-prompt.md
