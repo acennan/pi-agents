@@ -6,7 +6,57 @@
 
 Project documentation is a work in progress, and all the files are currently in the ./docs folder.
 
-## pi-mono SDK Integration
+---
+
+**IMPORTANT:** If there is any ambiguity in what you need to do, or if you are unsure of the best way to proceed, _ALWAYS_ ask for clarification. _DO NOT_ make assumptions or decide for yourself the best way to proceed.
+
+---
+## Workflow
+
+1. **Claim**: Use `br update <id> --status=in_progress`
+2. **Orient**: Read @docs/TEAMS_IMPLEMENTATION.md to get an overall understanding of the project architecture. Use @docs/BEADS-MAPPING.md to map the issue to a specific task in the implementation file which should be read to gather additional information.
+3. **Work**: Implement the task
+4. **Test**: Ensure sufficient tests are added to cover the new functionality and that all tests pass.
+4. **Complete**: Use `br close <id>`
+5. **Sync**: Always run `br sync --flush-only` at the session end
+
+## Development Environment
+
+### Runtime and tooling
+- Runtime: Bun (see packageManager in package.json for the pinned version).
+
+### TypeScript
+- Write strict, idiomatic TS
+- No `any` (use `unknown`, generics, or proper types).
+- Prefer type to interface; use interface only when extending or implementing is needed.
+- Prefer immutability where practical.
+- Narrow with type guards; avoid assertions and ! except as a last resort.
+- Prefer exhaustive handling for unions.
+- Treat caught errors as unknown and narrow before use.
+
+### Bun
+- Prefer async/await; never swallow rejections.
+- Avoid module top-level side effects (I/O, network, reading env, global mutations) unless explicitly intended.
+- Env vars: validate centrally; read at runtime.
+- Error handling: rethrow with context; preserve cause when available; don't throw strings.
+- Library code should not log.
+- Guard CLI entry points that also export functions so Vitest doesn't execute it on import. 
+
+### Testing (Vitest)
+- New logic requires tests unless truly trivial (types-only, re-exports, comments/formatting).
+- Tests must be deterministic and isolated; avoid shared mutable state.
+- Prefer behavioural tests; mock sparingly.
+- No committed .only/.skip (unless explicitly justified).
+- Bug fixes must include a regression test.
+- Avoid snapshots unless they add clear value and are stable.
+
+### Style, docs, and security
+- Follow existing formatting/lint; keep functions small and readable.
+- Prefer named exports.
+- Update docs/comments when behaviour changes (comments explain "why", not "what").
+- Never log secrets; validate/sanitise external inputs (paths/URLs/user data).
+
+## SDK (pi-mono) Integration
 
 When information is needed from the pi-mono SDK, then use the following documents:
 - ./docs/pi-mono/README-agent.md
@@ -14,7 +64,7 @@ When information is needed from the pi-mono SDK, then use the following document
 - ./docs/pi-mono/README-coding-agent.md
 - ./docs/pi-mono/README-tui.md
 
-If these do not answer the question, or more details are required, then the SDK repo is available under the relative directory `../../pi-mono/packages`. 
+If these do not answer the question, or more details are required, then the SDK repo is available under the relative directory `../pi-mono/packages`. 
 
 ## jcodemunch Integration
 
@@ -24,60 +74,9 @@ Use jcodemunch-mcp for code lookup whenever available. Use jcodemunch-mcp for co
 
 Use jdocmunch-mcp for local document lookup whenever available. Use jdocmunch-mcp for local document lookup whenever available. Supports the following document types: `.md`, `.json`, `.yaml`, and `.xml`.
 
-<!-- bv-agent-instructions-v2 -->
-
----
-
 ## Beads Workflow Integration
 
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking and [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) (`bv`) for graph-aware triage. Issues are stored in `.beads/` and tracked in git.
-
-### Using bv as an AI sidecar
-
-bv is a graph-aware triage engine for Beads projects (.beads/beads.jsonl). Instead of parsing JSONL or hallucinating graph traversal, use robot flags for deterministic, dependency-aware outputs with precomputed metrics (PageRank, betweenness, critical path, cycles, HITS, eigenvector, k-core).
-
-**Scope boundary:** bv handles *what to work on* (triage, priority, planning). `br` handles creating, modifying, and closing beads.
-
-**CRITICAL: Use ONLY --robot-* flags. Bare bv launches an interactive TUI that blocks your session.**
-
-#### The Workflow: Start With Triage
-
-**`bv --robot-triage` is your single entry point.** It returns everything you need in one call:
-- `quick_ref`: at-a-glance counts + top 3 picks
-- `recommendations`: ranked actionable items with scores, reasons, unblock info
-- `quick_wins`: low-effort high-impact items
-- `blockers_to_clear`: items that unblock the most downstream work
-- `project_health`: status/type/priority distributions, graph metrics
-- `commands`: copy-paste shell commands for next steps
-
-```bash
-bv --robot-triage        # THE MEGA-COMMAND: start here
-bv --robot-next          # Minimal: just the single top pick + claim command
-
-# Token-optimized output (TOON) for lower LLM context usage:
-bv --robot-triage --format toon
-```
-
-#### Other bv Commands
-
-| Command | Returns |
-|---------|---------|
-| `--robot-plan` | Parallel execution tracks with unblocks lists |
-| `--robot-priority` | Priority misalignment detection with confidence |
-| `--robot-insights` | Full metrics: PageRank, betweenness, HITS, eigenvector, critical path, cycles, k-core |
-| `--robot-alerts` | Stale issues, blocking cascades, priority mismatches |
-| `--robot-suggest` | Hygiene: duplicates, missing deps, label suggestions, cycle breaks |
-| `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified issues |
-| `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
-
-#### Scoping & Filtering
-
-```bash
-bv --robot-plan --label backend              # Scope to label's subgraph
-bv --robot-insights --as-of HEAD~30          # Historical point-in-time
-bv --recipe actionable --robot-plan          # Pre-filter: ready to work (no blockers)
-bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank scores
-```
+This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue trackingIssues are stored in `.beads/` and tracked in git.
 
 ### br Commands for Issue Management
 
@@ -91,30 +90,3 @@ br close <id> --reason="Completed"
 br close <id1> <id2>  # Close multiple issues at once
 br sync --flush-only  # Export DB to JSONL
 ```
-
-### Workflow Pattern
-
-1. **Triage**: Run `bv --robot-triage` to find the highest-impact actionable work
-2. **Claim**: Use `br update <id> --status=in_progress`
-3. **Work**: Implement the task
-4. **Complete**: Use `br close <id>`
-5. **Sync**: Always run `br sync --flush-only` at session end
-
-### Key Concepts
-
-- **Dependencies**: Issues can block other issues. `br ready` shows only unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers 0-4, not words)
-- **Types**: task, bug, feature, epic, chore, docs, question
-- **Blocking**: `br dep add <issue> <depends-on>` to add dependencies
-
-### Session Protocol
-
-```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-br sync --flush-only    # Export beads changes to JSONL
-git commit -m "..."     # Commit everything
-git push                # Push to remote
-```
-
-<!-- end-bv-agent-instructions -->
