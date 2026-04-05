@@ -2,8 +2,6 @@
 
 ---
 
-See also: `docs/TEAMS-BACKLOG.md` for the issue-style implementation backlog derived from this plan.
-
 Derived from `docs/TEAMS-PROPOSAL.md` and checked against the currently documented Pi SDK and extension capabilities in:
 
 - `docs/pi-mono/README-agent.md`
