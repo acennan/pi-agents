@@ -1,7 +1,9 @@
 *.iml
 .idea/
 node_modules/
-.beads/
+!.beads/
+.beads/*
+!.beads/issues.jsonl
 .claude/
 *.d.ts
 *.d.ts.map
