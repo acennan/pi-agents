@@ -9,6 +9,7 @@
  *     prompt-templates/       shared across all teams, copied from extension source
  *     <team-name>/
  *       team-config.yaml      authoritative snapshot (see TeamSnapshot)
+ *       runtime-lock.json     active leader/session ownership record
  *       state/                leader-owned lineage and workflow state (created lazily)
  *
  * NOT created here (created lazily by later tasks):

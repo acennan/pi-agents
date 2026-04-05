@@ -19,6 +19,13 @@ import {
   type TeamSnapshot,
 } from "../storage/team-home.ts";
 import {
+  type ClaimRuntimeLockResult,
+  type CreateRuntimeLockRecordOptions,
+  claimRuntimeLock,
+  createRuntimeLockRecord,
+  type ProcessAliveChecker,
+} from "../storage/team-lease.ts";
+import {
   type CommandRunner as BeadsCommandRunner,
   validateBeadsWorkspace,
 } from "../tasks/beads.ts";
@@ -43,6 +50,12 @@ export type RestartTeamPreflightResult = {
   worktreeDir: string;
   warnings: string[];
 };
+
+export type PrepareRestartTeamLeaseParams = {
+  teamName: string;
+  sessionId?: string;
+  processAlive?: ProcessAliveChecker;
+} & CreateRuntimeLockRecordOptions;
 
 /**
  * Validate that an existing team can be restarted from its persisted snapshot.
@@ -89,6 +102,22 @@ export async function preflightRestartTeam(
     worktreeDir: resolvedWorktreeDir,
     warnings: loadResult.warnings,
   };
+}
+
+export async function prepareRestartTeamLease(
+  params: PrepareRestartTeamLeaseParams,
+): Promise<ClaimRuntimeLockResult> {
+  return claimRuntimeLock(
+    params.teamName,
+    createRuntimeLockRecord(params.sessionId, {
+      pid: params.pid,
+      createdAt: params.createdAt,
+    }),
+    {
+      allowStaleRecovery: true,
+      processAlive: params.processAlive,
+    },
+  );
 }
 
 function validateSnapshotConfig(config: unknown) {

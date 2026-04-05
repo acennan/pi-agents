@@ -29,6 +29,10 @@ import {
   writeTeamSnapshot,
 } from "../storage/team-home.ts";
 import {
+  createRuntimeLockRecord,
+  writeRuntimeLock,
+} from "../storage/team-lease.ts";
+import {
   type CommandRunner as BeadsCommandRunner,
   validateBeadsWorkspace,
 } from "../tasks/beads.ts";
@@ -70,6 +74,11 @@ export type CreateTeamParams = {
    * templates can be located portably at runtime.
    */
   extensionSourceDir: string;
+  /**
+   * Optional leader-session identifier written to `runtime-lock.json`.
+   * When omitted, a process-scoped session id is generated automatically.
+   */
+  sessionId?: string;
 };
 
 export const SUPPORTED_THINKING_LEVELS = [
@@ -178,7 +187,8 @@ export async function preflightCreateTeam(
 
 /**
  * Create a new team: build its home directory, copy shared prompt templates,
- * and persist the authoritative `team-config.yaml` snapshot.
+ * persist the authoritative `team-config.yaml` snapshot, and record the active
+ * leader session in `runtime-lock.json`.
  *
  * Throws `TeamAlreadyExistsError` (from team-home.ts) when the team name is
  * already in use — the caller should surface this to the user.
@@ -197,6 +207,7 @@ export async function createTeam(
     configSourcePath,
     config,
     extensionSourceDir,
+    sessionId,
   } = params;
 
   // Resolve paths to absolute form.
@@ -233,6 +244,12 @@ export async function createTeam(
   };
 
   await writeTeamSnapshot(snapshot);
+
+  // `createTeamDir()` above guarantees this team directory was just created, so
+  // no competing leader can already have a runtime lock here. We therefore
+  // write the initial lease directly rather than going through stale/active
+  // contention checks that only matter for restart/delete recovery flows.
+  await writeRuntimeLock(name, createRuntimeLockRecord(sessionId));
 
   return snapshot;
 }

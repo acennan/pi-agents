@@ -7,12 +7,20 @@ import { getModels } from "@mariozechner/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TeamPreflightError } from "../git/worktree.ts";
 import { createTeam } from "../leader/create-team.ts";
-import { preflightRestartTeam } from "../leader/restart-team.ts";
+import {
+  preflightRestartTeam,
+  prepareRestartTeamLease,
+} from "../leader/restart-team.ts";
 import {
   createTeamDir,
   type TeamSnapshot,
   writeTeamSnapshot,
 } from "../storage/team-home.ts";
+import {
+  readRuntimeLock,
+  removeRuntimeLock,
+  writeRuntimeLock,
+} from "../storage/team-lease.ts";
 import type { CommandRunner as BeadsCommandRunner } from "../tasks/beads.ts";
 
 const TEST_ROOT = join(tmpdir(), "pi-teams-restart-test-tmp");
@@ -170,5 +178,72 @@ describe("preflightRestartTeam", () => {
         beadsRunner: SUCCESSFUL_BEADS_RUNNER,
       }),
     ).rejects.toThrow("missing-template.md");
+  });
+
+  it("claims the runtime lock for restart when no active leader is attached", async () => {
+    const repoDir = await createGitRepo("repo-restart-claim-lock");
+    const snapshot = await createSnapshotTeam("restart-claim-lock", repoDir);
+    await removeRuntimeLock(snapshot.name);
+
+    const action = await prepareRestartTeamLease({
+      teamName: snapshot.name,
+      sessionId: "restart-session",
+      pid: 9123,
+      createdAt: "2026-01-03T00:00:00.000Z",
+      processAlive: () => true,
+    });
+
+    expect(action).toBe("claimed");
+    await expect(readRuntimeLock(snapshot.name)).resolves.toMatchObject({
+      sessionId: "restart-session",
+      pid: 9123,
+    });
+  });
+
+  it("rejects restart when another active leader still owns the runtime lock", async () => {
+    const repoDir = await createGitRepo("repo-restart-active-lock");
+    const snapshot = await createSnapshotTeam("restart-active-lock", repoDir);
+    await writeRuntimeLock(snapshot.name, {
+      sessionId: "existing-session",
+      pid: 4001,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    await expect(
+      prepareRestartTeamLease({
+        teamName: snapshot.name,
+        sessionId: "new-session",
+        pid: 4002,
+        createdAt: "2026-01-02T00:00:00.000Z",
+        processAlive: () => true,
+      }),
+    ).rejects.toMatchObject({
+      name: "TeamLeaseError",
+      code: "lease-active",
+    });
+  });
+
+  it("recovers a stale runtime lock during restart", async () => {
+    const repoDir = await createGitRepo("repo-restart-stale-lock");
+    const snapshot = await createSnapshotTeam("restart-stale-lock", repoDir);
+    await writeRuntimeLock(snapshot.name, {
+      sessionId: "stale-session",
+      pid: 5001,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const action = await prepareRestartTeamLease({
+      teamName: snapshot.name,
+      sessionId: "replacement-session",
+      pid: 5002,
+      createdAt: "2026-01-02T00:00:00.000Z",
+      processAlive: () => false,
+    });
+
+    expect(action).toBe("recovered-stale");
+    await expect(readRuntimeLock(snapshot.name)).resolves.toMatchObject({
+      sessionId: "replacement-session",
+      pid: 5002,
+    });
   });
 });

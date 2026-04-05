@@ -2,8 +2,9 @@ import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTeam } from "../leader/create-team.ts";
+import * as teamHome from "../storage/team-home.ts";
 import {
   readTeamSnapshot,
   sharedPromptTemplatesDir,
@@ -12,6 +13,7 @@ import {
   teamDir,
   teamsRootDir,
 } from "../storage/team-home.ts";
+import { readRuntimeLock, runtimeLockPath } from "../storage/team-lease.ts";
 
 // ---------------------------------------------------------------------------
 // Isolate file system writes using PI_TEAMS_ROOT env var.
@@ -25,6 +27,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   delete process.env.PI_TEAMS_ROOT;
   await rm(TEST_ROOT, { recursive: true, force: true });
 });
@@ -60,6 +63,17 @@ describe("createTeam", () => {
   it("writes team-config.yaml", async () => {
     await createTeam(baseParams());
     expect(existsSync(teamConfigPath("my-team"))).toBe(true);
+  });
+
+  it("writes runtime-lock.json for the active leader session", async () => {
+    await createTeam(baseParams());
+
+    expect(existsSync(runtimeLockPath("my-team"))).toBe(true);
+    await expect(readRuntimeLock("my-team")).resolves.toMatchObject({
+      sessionId: expect.any(String),
+      pid: process.pid,
+      createdAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/),
+    });
   });
 
   it("snapshot contains the correct team name", async () => {
@@ -119,6 +133,19 @@ describe("createTeam", () => {
     await expect(createTeam(baseParams())).rejects.toBeInstanceOf(
       TeamAlreadyExistsError,
     );
+  });
+
+  it("does not write a runtime lock when snapshot persistence fails", async () => {
+    vi.spyOn(teamHome, "writeTeamSnapshot").mockRejectedValueOnce(
+      new Error("snapshot write failed"),
+    );
+
+    await expect(createTeam(baseParams())).rejects.toThrow(
+      "snapshot write failed",
+    );
+
+    expect(existsSync(teamDir("my-team"))).toBe(true);
+    expect(existsSync(runtimeLockPath("my-team"))).toBe(false);
   });
 
   it("copies prompt templates to the shared directory", async () => {
