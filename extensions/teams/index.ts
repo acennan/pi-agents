@@ -4,25 +4,193 @@
  * Registers the `/team` command family with the Pi extension API.
  * All team commands are rejected when this process is a member agent
  * rather than the leader session.
- *
- * Subcommand implementations (create, start, stop, …) are registered by
- * subsequent tasks (TF-02 onwards) via the shared CommandRouter instance.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { fileURLToPath } from "node:url";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+} from "@mariozechner/pi-coding-agent";
 import { CommandRouter } from "./command-router.ts";
+import { loadTeamConfigFile } from "./config/loader.ts";
+import { createTeam, preflightCreateTeam } from "./leader/create-team.ts";
+import {
+  preflightRestartTeam,
+  prepareRestartTeamLease,
+} from "./leader/restart-team.ts";
+import {
+  createTeamModeHelpText,
+  createTeamModeHotkeysText,
+  getTeamModeSubcommandCompletions,
+  parseCreateCommandArgs,
+  parseRestartCommandArgs,
+  resolveCreateCommandPaths,
+  TeamModeState,
+} from "./leader/team-state.ts";
 import { getTeamName, isMemberAgent } from "./roles.ts";
 
-export default function teamsExtension(pi: ExtensionAPI): void {
-  const router = new CommandRouter();
+const EXTENSION_SOURCE_DIR = fileURLToPath(new URL("./", import.meta.url));
+const DEFAULT_CONFIG_PATH = fileURLToPath(
+  new URL("./config/default-team.yaml", import.meta.url),
+);
+const BUNDLED_PROMPT_TEMPLATES_DIR = fileURLToPath(
+  new URL("./config/prompt-templates/", import.meta.url),
+);
 
-  // Register the built-in `help` subcommand. Additional subcommands will be
-  // registered by later tasks via the router exported below.
+export default function teamsExtension(pi: ExtensionAPI): void {
+  const router = new CommandRouter<ExtensionCommandContext>();
+  const teamModeState = new TeamModeState();
+
+  router.register("create", {
+    description: "Create a team from config and enter team mode",
+    handler: async (args, ctx) => {
+      if (teamModeState.isActive()) {
+        const activeTeam = teamModeState.getActiveTeam();
+        return `Team "${activeTeam?.snapshot.name ?? "unknown"}" is already active in this session`;
+      }
+
+      const parsed = parseCreateCommandArgs(args);
+      const paths = resolveCreateCommandPaths(ctx.cwd, parsed.name, {
+        configPath: parsed.configPath,
+        worktreeDir: parsed.worktreeDir,
+      });
+      const loadResult = await loadTeamConfigFile(
+        paths.configPath ?? DEFAULT_CONFIG_PATH,
+        BUNDLED_PROMPT_TEMPLATES_DIR,
+      );
+
+      const currentModel = ctx.model
+        ? `${ctx.model.provider}/${ctx.model.id}`
+        : undefined;
+      const modelReference = parsed.model ?? currentModel;
+      if (modelReference === undefined) {
+        throw new Error(
+          "No active model is selected. Choose one with /model before creating a team, or pass --model provider/model-id.",
+        );
+      }
+
+      const preflight = await preflightCreateTeam({
+        name: parsed.name,
+        workspacePath: ctx.cwd,
+        worktreeDir: paths.worktreeDir,
+        model: modelReference,
+        thinkingLevel: parsed.thinkingLevel ?? pi.getThinkingLevel(),
+        config: loadResult.config,
+        configSourcePath: paths.configPath,
+        extensionSourceDir: EXTENSION_SOURCE_DIR,
+        availableModels: ctx.modelRegistry.getAvailable(),
+      });
+
+      const snapshot = await createTeam({
+        name: parsed.name,
+        workspacePath: preflight.workspacePath,
+        worktreeDir: preflight.worktreeDir,
+        model: modelReference,
+        thinkingLevel: parsed.thinkingLevel ?? pi.getThinkingLevel(),
+        configSourcePath: paths.configPath,
+        config: preflight.config,
+        extensionSourceDir: EXTENSION_SOURCE_DIR,
+      });
+
+      await teamModeState.activate(ctx, { snapshot });
+
+      return formatSuccessMessage(
+        `Created team "${snapshot.name}" and entered team mode.`,
+        preflight.warnings,
+      );
+    },
+  });
+
+  router.register("stop", {
+    description: "Stop the active team and leave team mode",
+    handler: async (_args, ctx) => {
+      const activeTeam = teamModeState.getActiveTeam();
+      if (activeTeam === undefined) {
+        return "No team is currently active.";
+      }
+
+      await teamModeState.deactivate(ctx);
+      return `Stopped team "${activeTeam.snapshot.name}" and left team mode.`;
+    },
+  });
+
+  router.register("pause", {
+    description: "Pause new task claims without stopping the team",
+    handler: async () => notImplementedMessage("pause", "TF-15"),
+  });
+
+  router.register("resume", {
+    description: "Resume task claiming after a pause",
+    handler: async () => notImplementedMessage("resume", "TF-15"),
+  });
+
+  router.register("restart", {
+    description: "Restart a stored team from its persisted snapshot",
+    handler: async (args, ctx) => {
+      if (teamModeState.isActive()) {
+        const activeTeam = teamModeState.getActiveTeam();
+        return `Team "${activeTeam?.snapshot.name ?? "unknown"}" is already active in this session`;
+      }
+
+      const parsed = parseRestartCommandArgs(args);
+      const preflight = await preflightRestartTeam({
+        teamName: parsed.teamName,
+        currentWorkspacePath: ctx.cwd,
+        availableModels: ctx.modelRegistry.getAvailable(),
+      });
+      const leaseResult = await prepareRestartTeamLease({
+        teamName: parsed.teamName,
+      });
+
+      await teamModeState.activate(ctx, {
+        snapshot: preflight.snapshot,
+      });
+
+      return formatSuccessMessage(
+        formatRestartSuccessMessage(preflight.snapshot.name, leaseResult),
+        preflight.warnings,
+      );
+    },
+  });
+
+  router.register("delete", {
+    description: "Delete a stored team after it has been stopped",
+    handler: async () => notImplementedMessage("delete", "TF-25"),
+  });
+
+  router.register("send", {
+    description: "Send a queued message to a named agent",
+    handler: async () => notImplementedMessage("send", "TF-14"),
+  });
+
+  router.register("steer", {
+    description: "Queue a steering message for a named agent",
+    handler: async () => notImplementedMessage("steer", "TF-14"),
+  });
+
+  router.register("broadcast", {
+    description: "Broadcast a message to standing code agents",
+    handler: async () => notImplementedMessage("broadcast", "TF-14"),
+  });
+
   router.register("help", {
     description: "Show available /team subcommands",
-    handler: async (_args) => {
-      // Dispatch with empty string triggers the router's help text.
-      return router.dispatch("");
+    handler: async () => createTeamModeHelpText(),
+  });
+
+  router.register("hotkeys", {
+    description: "Show team-mode shortcut help",
+    handler: async () => createTeamModeHotkeysText(),
+  });
+
+  router.register("exit", {
+    description: "Explain how to leave team mode safely",
+    handler: async () => {
+      if (!teamModeState.isActive()) {
+        return "Team mode is not active.";
+      }
+
+      return "Run /team stop first. `/team exit` does not leave an active team running in the background.";
     },
   });
 
@@ -31,6 +199,9 @@ export default function teamsExtension(pi: ExtensionAPI): void {
 
     getArgumentCompletions: (prefix: string) => {
       if (isMemberAgent()) return null;
+      if (teamModeState.isActive()) {
+        return getTeamModeSubcommandCompletions(prefix);
+      }
       return router.getCompletions(prefix);
     },
 
@@ -49,9 +220,13 @@ export default function teamsExtension(pi: ExtensionAPI): void {
         return;
       }
 
-      const response = await router.dispatch(args ?? "");
-      if (response !== undefined) {
-        ctx.ui.notify(response, "info");
+      try {
+        const response = await router.dispatch(args ?? "", ctx);
+        if (response !== undefined) {
+          ctx.ui.notify(response, "info");
+        }
+      } catch (err: unknown) {
+        ctx.ui.notify(getErrorMessage(err), "error");
       }
     },
   });
@@ -63,6 +238,45 @@ export default function teamsExtension(pi: ExtensionAPI): void {
   });
 }
 
-// Re-export the router type so later task modules can register subcommands
-// by importing this file and calling `registerSubcommand`.
+function formatSuccessMessage(
+  message: string,
+  warnings: readonly string[],
+): string {
+  if (warnings.length === 0) {
+    return message;
+  }
+
+  return [
+    message,
+    "",
+    "Warnings:",
+    ...warnings.map((warning) => `- ${warning}`),
+  ].join("\n");
+}
+
+function formatRestartSuccessMessage(
+  teamName: string,
+  leaseResult: "claimed" | "already-owned" | "recovered-stale",
+): string {
+  switch (leaseResult) {
+    case "claimed":
+      return `Restarted team "${teamName}" and entered team mode.`;
+    case "already-owned":
+      return `Restarted team "${teamName}" and entered team mode using the existing runtime lease.`;
+    case "recovered-stale":
+      return `Restarted team "${teamName}" and entered team mode after recovering a stale runtime lease.`;
+  }
+}
+
+function notImplementedMessage(commandName: string, taskId: string): string {
+  return `/team ${commandName} is reserved for a later slice (${taskId}) and is not implemented yet.`;
+}
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
+}
+
 export type { CommandRouter };

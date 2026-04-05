@@ -13,7 +13,7 @@ import type { AutocompleteItem } from "@mariozechner/pi-tui";
 // ---------------------------------------------------------------------------
 
 /** A subcommand descriptor registered in the router. */
-export type SubcommandDescriptor = {
+export type SubcommandDescriptor<TContext = void> = {
   /** Short description shown in `/team help` output. */
   readonly description: string;
   /**
@@ -21,13 +21,16 @@ export type SubcommandDescriptor = {
    * Returns a human-readable string that will be displayed to the user,
    * or undefined when the handler manages display itself.
    */
-  readonly handler: (args: string) => Promise<string | undefined>;
+  readonly handler: (
+    args: string,
+    context: TContext,
+  ) => Promise<string | undefined>;
 };
 
 /** A read-only view of a registered subcommand (name + descriptor). */
-export type RegisteredSubcommand = {
+export type RegisteredSubcommand<TContext = void> = {
   readonly name: string;
-} & SubcommandDescriptor;
+} & SubcommandDescriptor<TContext>;
 
 // ---------------------------------------------------------------------------
 // CommandRouter
@@ -41,11 +44,11 @@ export type RegisteredSubcommand = {
  * dispatch skeleton and is intentionally decoupled from the Pi ExtensionAPI
  * so it can be exercised in unit tests without a running runtime.
  */
-export class CommandRouter {
-  readonly #subcommands = new Map<string, SubcommandDescriptor>();
+export class CommandRouter<TContext = void> {
+  readonly #subcommands = new Map<string, SubcommandDescriptor<TContext>>();
 
   /** Register a subcommand. Throws if the name is already taken. */
-  register(name: string, descriptor: SubcommandDescriptor): void {
+  register(name: string, descriptor: SubcommandDescriptor<TContext>): void {
     if (this.#subcommands.has(name)) {
       throw new Error(`Subcommand "${name}" is already registered`);
     }
@@ -58,7 +61,10 @@ export class CommandRouter {
    * Returns a response string suitable for display to the user, or undefined
    * when the handler manages output itself.
    */
-  async dispatch(rawArgs: string): Promise<string | undefined> {
+  async dispatch(
+    rawArgs: string,
+    context?: TContext,
+  ): Promise<string | undefined> {
     const trimmed = rawArgs.trim();
     const spaceIndex = trimmed.indexOf(" ");
     const subcommand =
@@ -74,7 +80,7 @@ export class CommandRouter {
       return `Unknown subcommand: "${subcommand}". Run /team help for usage.`;
     }
 
-    return descriptor.handler(rest);
+    return descriptor.handler(rest, context as TContext);
   }
 
   /**
@@ -93,7 +99,7 @@ export class CommandRouter {
   }
 
   /** Return all registered subcommands in registration order. */
-  list(): ReadonlyArray<RegisteredSubcommand> {
+  list(): ReadonlyArray<RegisteredSubcommand<TContext>> {
     return [...this.#subcommands.entries()].map(([name, descriptor]) => ({
       name,
       ...descriptor,
