@@ -51,7 +51,21 @@ export function parseTeamConfig(
     throw new TeamConfigError(`YAML parse error: ${message}`, { cause: err });
   }
 
-  const normalized = normalizeTeamConfig(raw);
+  return validateTeamConfigValue(raw, promptTemplatesDir);
+}
+
+/**
+ * Validate a parsed config object and optionally verify referenced
+ * prompt-template files.
+ *
+ * This is useful when the config has already been parsed (for example when
+ * loading the persisted snapshot from `team-config.yaml` during restart).
+ */
+export function validateTeamConfigValue(
+  value: unknown,
+  promptTemplatesDir?: string,
+): LoadResult {
+  const normalized = normalizeTeamConfig(value);
   const result = TeamConfigSchema.safeParse(normalized);
   if (!result.success) {
     const issues = result.error.issues
