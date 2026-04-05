@@ -13,11 +13,27 @@ Project documentation is a work in progress, and all the files are currently in 
 ---
 ## Workflow
 
-1. **Claim**: Use `br update <id> --status=in_progress`
-2. **Orient**: Read @docs/TEAMS_IMPLEMENTATION.md to get an overall understanding of the project architecture. Use @docs/BEADS-MAPPING.md to map the issue to a specific task in the implementation file which should be read to gather additional information.
-3. **Work**: Implement the task
-4. **Test**: Ensure sufficient tests are added to cover the new functionality and that all tests pass.
-4. **Complete**: Use `br close <id>`
+### Code Workflow
+1. **Claim**: Use `br update <id> --status=in_progress` to get the next task
+2. **Orient**: Read @docs/TEAMS-IMPLEMENTATION.md to get an overall understanding of the project architecture. Consider this a guideline that can be deviated from slightly if it produces a better quality solution
+3. **Work**: Implement the task using the notes in the description field
+4. **Quality**: Use `bun run check` and `bun run typecheck` to ensure the code is of the required quality and is type-safe
+5. **Test**: Ensure sufficient tests are added to cover the new functionality and that all tests pass
+6. **Git**: Ensure all new and modified files are staged in git
+
+### Review Workflow
+1. **Important:** DO NOT MODIFY ANY FILES
+2. **Find**: Use the user-supplied identifier to load the task from beads
+3. **Changes**: All file changes will be currently staged in git
+4. **Work**: Review the changes against the notes in the task description field
+5. **Clarifcation**: If additional clarification is required, use @docs/TEAMS-PROPOSAL and @docs/TEAMS-INPLEMENTATION
+6. **Report**: Inform the user of any issues found, along with their severity
+
+### Commit Workflow
+1. **Important:** DO NOT MODIFY ANY SOURCE CODE FILES
+2. **Find**: Use the user-supplied identifier to load the task from beads
+3. **Git**: Commit the changes against the implemenation identifier found in the task external reference field. Include a summary of the changes in the commit body, and both task and implementation identifiers in the commit footer. 
+4. **Complete**: Use `br close <id>` to close the beads task
 5. **Sync**: Always run `br sync --flush-only` at the session end
 
 ## Development Environment
@@ -68,13 +84,13 @@ If these do not answer the question, or more details are required, then the SDK 
 
 ## jcodemunch Integration
 
-Use jcodemunch-mcp for code lookup whenever available. Use jcodemunch-mcp for code lookup whenever available. Prefer symbol search, outlines, and targeted retrieval over reading full files.
+Use jcodemunch-mcp for code lookup whenever available. Prefer symbol search, outlines, and targeted retrieval over reading full files.
 
 ## jdocmunch Integration
 
-Use jdocmunch-mcp for local document lookup whenever available. Use jdocmunch-mcp for local document lookup whenever available. Supports the following document types: `.md`, `.json`, `.yaml`, and `.xml`.
+Use jdocmunch-mcp for local document lookup whenever available. Supports the following document types: `.md`, `.json`, `.yaml`, and `.xml`.
 
-## Beads Workflow Integration
+## Beads Integration
 
 This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue trackingIssues are stored in `.beads/` and tracked in git.
 
