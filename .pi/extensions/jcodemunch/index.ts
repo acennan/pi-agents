@@ -468,7 +468,7 @@ export default function jcodemunchExtension(pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const repo = repoId(ctx.cwd);
+      const repo = await getCodeMunchRepoName(ctx.cwd);
       const args = ["search_symbols", repo, params.query];
 
       if (params.kind) {
@@ -553,7 +553,7 @@ export default function jcodemunchExtension(pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const repo = repoId(ctx.cwd);
+      const repo = await getCodeMunchRepoName(ctx.cwd);
       const args = ["get_symbol", repo, params.symbol_id];
 
       if (params.context_lines !== undefined) {
@@ -619,7 +619,7 @@ export default function jcodemunchExtension(pi: ExtensionAPI) {
       }),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const repo = repoId(ctx.cwd);
+      const repo = await getCodeMunchRepoName(ctx.cwd);
       const args = ["get_symbols", repo, ...params.symbol_ids];
 
       const result = await callCli(pi, args, {
@@ -678,7 +678,7 @@ export default function jcodemunchExtension(pi: ExtensionAPI) {
       }),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const repo = repoId(ctx.cwd);
+      const repo = await getCodeMunchRepoName(ctx.cwd);
       const args = ["file_outline", repo, params.file_path];
 
       const result = await callCli(pi, args, {
