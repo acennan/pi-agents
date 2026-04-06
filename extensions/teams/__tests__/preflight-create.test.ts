@@ -106,6 +106,29 @@ describe("preflightCreateTeam", () => {
     expect(result.config.agents[0]?.promptTemplate).toBe("code-prompt.md");
   });
 
+  it("returns a warning when a code agent omits tools and would inherit full leader access", async () => {
+    const repoDir = await createGitRepo("repo-warning-missing-tools");
+    const worktreeDir = join(TEST_ROOT, "worktrees-warning-missing-tools");
+
+    const result = await preflightCreateTeam({
+      ...baseParams(repoDir, worktreeDir),
+      config: {
+        agents: [
+          {
+            nameTemplate: "code",
+            type: "code",
+            model: `${AGENT_MODEL.provider}/${AGENT_MODEL.id}`,
+            thinking: "medium",
+            promptTemplate: "code-prompt.md",
+          },
+        ],
+      },
+    });
+
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toMatch(/full leader access/);
+  });
+
   it("fails when the team name already exists", async () => {
     const repoDir = await createGitRepo("repo-existing-team");
     const worktreeDir = join(TEST_ROOT, "worktrees-existing-team");

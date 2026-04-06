@@ -318,6 +318,9 @@ export class TeamModeState {
   readonly #removeRuntimeLock: typeof removeRuntimeLock;
 
   #activeTeam: ActiveTeamMode | undefined;
+  #dashboard: TeamDashboardComponent | undefined;
+  #dashboardEvents: string[] = [];
+  #dashboardTeamStatus = "Active";
 
   constructor(deps: TeamModeStateDeps = {}) {
     this.#removeRuntimeLock = deps.removeRuntimeLock ?? removeRuntimeLock;
@@ -331,11 +334,32 @@ export class TeamModeState {
     return this.#activeTeam;
   }
 
+  addEvent(event: string): void {
+    this.#dashboardEvents.push(event);
+    this.#dashboard?.addEvent(event);
+  }
+
+  setTeamStatus(status: string): void {
+    this.#dashboardTeamStatus = status;
+    this.#dashboard?.setTeamStatus(status);
+  }
+
+  updateAgent(): void {
+    this.#dashboard?.updateAgent();
+  }
+
+  updateTask(): void {
+    this.#dashboard?.updateTask();
+  }
+
   async activate(
     ctx: ExtensionContext | ExtensionCommandContext,
     activeTeam: ActiveTeamMode,
   ): Promise<void> {
     this.#activeTeam = activeTeam;
+    this.#dashboard = undefined;
+    this.#dashboardEvents = [];
+    this.#dashboardTeamStatus = "Active";
 
     ctx.ui.setEditorComponent(
       (tui, theme, keybindings) =>
@@ -350,10 +374,16 @@ export class TeamModeState {
         tui,
         theme,
         activeTeam.snapshot.name,
+        this.#dashboardTeamStatus,
       );
-      dashboard.addEvent(`Entered team mode for ${activeTeam.snapshot.name}`);
+      this.#dashboard = dashboard;
+      for (const event of this.#dashboardEvents) {
+        dashboard.addEvent(event);
+      }
       return dashboard;
     });
+
+    this.addEvent(`Entered team mode for ${activeTeam.snapshot.name}`);
 
     ctx.ui.setStatus(
       "team-mode",
@@ -373,6 +403,9 @@ export class TeamModeState {
     ctx.ui.setEditorComponent(undefined);
     ctx.ui.setWidget("team-dashboard", undefined);
     ctx.ui.setStatus("team-mode", undefined);
+    this.#dashboard = undefined;
+    this.#dashboardEvents = [];
+    this.#dashboardTeamStatus = "Active";
     this.#activeTeam = undefined;
   }
 }

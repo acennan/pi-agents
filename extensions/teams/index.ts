@@ -18,6 +18,7 @@ import {
   preflightRestartTeam,
   prepareRestartTeamLease,
 } from "./leader/restart-team.ts";
+import { TeamManager } from "./leader/team-manager.ts";
 import {
   createTeamModeHelpText,
   createTeamModeHotkeysText,
@@ -27,6 +28,7 @@ import {
   resolveCreateCommandPaths,
   TeamModeState,
 } from "./leader/team-state.ts";
+import { pluralize } from "./pluralize.ts";
 import { getTeamName, isMemberAgent } from "./roles.ts";
 
 const EXTENSION_SOURCE_DIR = fileURLToPath(new URL("./", import.meta.url));
@@ -40,6 +42,7 @@ const BUNDLED_PROMPT_TEMPLATES_DIR = fileURLToPath(
 export default function teamsExtension(pi: ExtensionAPI): void {
   const router = new CommandRouter<ExtensionCommandContext>();
   const teamModeState = new TeamModeState();
+  const teamManager = new TeamManager();
 
   router.register("create", {
     description: "Create a team from config and enter team mode",
@@ -94,10 +97,23 @@ export default function teamsExtension(pi: ExtensionAPI): void {
 
       await teamModeState.activate(ctx, { snapshot });
 
-      return formatSuccessMessage(
-        `Created team "${snapshot.name}" and entered team mode.`,
-        preflight.warnings,
-      );
+      try {
+        const startResult = await teamManager.startTeam({
+          snapshot: {
+            ...snapshot,
+            config: preflight.config,
+          },
+          lifecycleSink: createLifecycleSink(ctx, teamModeState),
+        });
+
+        return formatSuccessMessage(
+          `Created team "${snapshot.name}", started ${startResult.codeAgentCount} code agent${pluralize(startResult.codeAgentCount)}, and entered team mode.`,
+          preflight.warnings,
+        );
+      } catch (error) {
+        await teamModeState.deactivate(ctx);
+        throw error;
+      }
     },
   });
 
@@ -109,8 +125,10 @@ export default function teamsExtension(pi: ExtensionAPI): void {
         return "No team is currently active.";
       }
 
+      const stopResult = await teamManager.stopActiveTeam();
       await teamModeState.deactivate(ctx);
-      return `Stopped team "${activeTeam.snapshot.name}" and left team mode.`;
+      const stoppedAgentCount = stopResult?.stoppedAgentCount ?? 0;
+      return `Stopped team "${activeTeam.snapshot.name}", terminated ${stoppedAgentCount} code agent${pluralize(stoppedAgentCount)}, and left team mode.`;
     },
   });
 
@@ -146,10 +164,20 @@ export default function teamsExtension(pi: ExtensionAPI): void {
         snapshot: preflight.snapshot,
       });
 
-      return formatSuccessMessage(
-        formatRestartSuccessMessage(preflight.snapshot.name, leaseResult),
-        preflight.warnings,
-      );
+      try {
+        const startResult = await teamManager.startTeam({
+          snapshot: preflight.snapshot,
+          lifecycleSink: createLifecycleSink(ctx, teamModeState),
+        });
+
+        return formatSuccessMessage(
+          `${formatRestartSuccessMessage(preflight.snapshot.name, leaseResult)} Started ${startResult.codeAgentCount} code agent${pluralize(startResult.codeAgentCount)}.`,
+          preflight.warnings,
+        );
+      } catch (error) {
+        await teamModeState.deactivate(ctx);
+        throw error;
+      }
     },
   });
 
@@ -234,8 +262,21 @@ export default function teamsExtension(pi: ExtensionAPI): void {
   // SIGINT / SIGTERM best-effort shutdown hook (TF-27 will flesh this out).
   // Registered here so the extension owns the signal handlers from the start.
   pi.on("session_shutdown", async () => {
-    // Nothing to tear down yet — process-manager registration comes in TF-13.
+    await teamManager.stopActiveTeam();
   });
+}
+
+function createLifecycleSink(
+  ctx: ExtensionCommandContext,
+  teamModeState: TeamModeState,
+) {
+  return {
+    addEvent: (event: string) => teamModeState.addEvent(event),
+    notify: (message: string, type: "info" | "warning" | "error") =>
+      ctx.ui.notify(message, type),
+    setTeamStatus: (status: string) => teamModeState.setTeamStatus(status),
+    updateAgent: () => teamModeState.updateAgent(),
+  };
 }
 
 function formatSuccessMessage(

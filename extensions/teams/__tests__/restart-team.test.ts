@@ -180,6 +180,43 @@ describe("preflightRestartTeam", () => {
     ).rejects.toThrow("missing-template.md");
   });
 
+  it("returns warnings from the stored snapshot when tools are omitted", async () => {
+    const repoDir = await createGitRepo("repo-restart-warning-missing-tools");
+    await createSnapshotTeam("restart-warning-missing-tools", repoDir);
+
+    const snapshot: TeamSnapshot = {
+      name: "restart-warning-missing-tools",
+      workspacePath: repoDir,
+      worktreeDir: join(TEST_ROOT, "restart-warning-missing-tools-worktrees"),
+      model: `${LEADER_MODEL.provider}/${LEADER_MODEL.id}`,
+      thinkingLevel: "medium",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      config: {
+        agents: [
+          {
+            nameTemplate: "code",
+            type: "code",
+            model: `${AGENT_MODEL.provider}/${AGENT_MODEL.id}`,
+            thinking: "medium",
+            promptTemplate: "code-prompt.md",
+          },
+        ],
+      },
+    };
+
+    await writeTeamSnapshot(snapshot);
+
+    const result = await preflightRestartTeam({
+      teamName: snapshot.name,
+      currentWorkspacePath: repoDir,
+      availableModels: AVAILABLE_MODELS,
+      beadsRunner: SUCCESSFUL_BEADS_RUNNER,
+    });
+
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toMatch(/full leader access/);
+  });
+
   it("claims the runtime lock for restart when no active leader is attached", async () => {
     const repoDir = await createGitRepo("repo-restart-claim-lock");
     const snapshot = await createSnapshotTeam("restart-claim-lock", repoDir);
