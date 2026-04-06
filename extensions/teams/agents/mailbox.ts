@@ -316,50 +316,54 @@ export async function consumeMailboxEntries(
 ): Promise<ConsumeMailboxResult> {
   return withMailboxInboxLock(
     options.inboxPath,
-    async () => {
-      await ensureMailboxFiles(options.inboxPath, options.cursorPath);
-
-      const entries = await readMailboxEntries(options.inboxPath);
-      const cursor = await readMailboxCursor(options.cursorPath);
-
-      if (cursor.nextIndex > entries.length) {
-        throw new MailboxStorageError(
-          "invalid-cursor",
-          `Mailbox cursor at "${options.cursorPath}" points past the end of inbox "${options.inboxPath}"`,
-        );
-      }
-
-      const processedEntries: MailboxEntry[] = [];
-      let nextIndex = cursor.nextIndex;
-      let updatedAt = cursor.updatedAt;
-
-      while (nextIndex < entries.length) {
-        const entry = entries[nextIndex];
-        if (entry === undefined) {
-          break;
-        }
-
-        await options.handleEntry(entry, { index: nextIndex });
-        processedEntries.push(entry);
-        nextIndex += 1;
-        updatedAt = new Date().toISOString();
-        await writeMailboxCursor(options.cursorPath, {
-          nextIndex,
-          updatedAt,
-        });
-      }
-
-      return {
-        entries: processedEntries,
-        cursor: {
-          nextIndex,
-          updatedAt,
-        },
-        processedCount: processedEntries.length,
-      };
-    },
+    () => processMailboxUnderLock(options),
     options,
   );
+}
+
+async function processMailboxUnderLock(
+  options: Pick<ConsumeMailboxOptions, "inboxPath" | "cursorPath" | "handleEntry">,
+): Promise<ConsumeMailboxResult> {
+  await ensureMailboxFiles(options.inboxPath, options.cursorPath);
+
+  const entries = await readMailboxEntries(options.inboxPath);
+  const cursor = await readMailboxCursor(options.cursorPath);
+
+  if (cursor.nextIndex > entries.length) {
+    throw new MailboxStorageError(
+      "invalid-cursor",
+      `Mailbox cursor at "${options.cursorPath}" points past the end of inbox "${options.inboxPath}"`,
+    );
+  }
+
+  const processedEntries: MailboxEntry[] = [];
+  let nextIndex = cursor.nextIndex;
+  let updatedAt = cursor.updatedAt;
+
+  while (nextIndex < entries.length) {
+    const entry = entries[nextIndex];
+    if (entry === undefined) {
+      break;
+    }
+
+    await options.handleEntry(entry, { index: nextIndex });
+    processedEntries.push(entry);
+    nextIndex += 1;
+    updatedAt = new Date().toISOString();
+    await writeMailboxCursor(options.cursorPath, {
+      nextIndex,
+      updatedAt,
+    });
+  }
+
+  return {
+    entries: processedEntries,
+    cursor: {
+      nextIndex,
+      updatedAt,
+    },
+    processedCount: processedEntries.length,
+  };
 }
 
 export async function consumeTeamMailboxEntries(
