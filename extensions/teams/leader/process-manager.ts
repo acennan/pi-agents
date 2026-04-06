@@ -242,9 +242,6 @@ export function spawnChildRuntime(
   const command = options.execPath ?? process.execPath;
   const args = [entryPath.path, ...buildChildRuntimeArgs(metadata)];
   const spawnProcess = options.spawnImpl ?? defaultSpawn;
-  const outputLimitBytes =
-    options.outputLimitBytes ?? DEFAULT_CHILD_RUNTIME_OUTPUT_LIMIT_BYTES;
-  const expectedExitSignals = new Set(options.expectedExitSignals ?? []);
 
   const child = spawnProcess(command, args, {
     cwd: metadata.cwd,
@@ -252,6 +249,27 @@ export function spawnChildRuntime(
     shell: false,
     stdio: ["ignore", "pipe", "pipe"] as const,
   }) as unknown as SpawnedChildProcess;
+
+  const completion = buildCompletionPromise(child, metadata, options);
+
+  return {
+    child,
+    metadata,
+    completion,
+  };
+}
+
+function buildCompletionPromise(
+  child: SpawnedChildProcess,
+  metadata: ChildRuntimeMetadata,
+  options: Pick<
+    SpawnChildRuntimeOptions,
+    "outputLimitBytes" | "expectedExitSignals"
+  >,
+): Promise<ChildRuntimeExit> {
+  const outputLimitBytes =
+    options.outputLimitBytes ?? DEFAULT_CHILD_RUNTIME_OUTPUT_LIMIT_BYTES;
+  const expectedExitSignals = new Set(options.expectedExitSignals ?? []);
 
   let stdout = "";
   let stderr = "";
@@ -272,7 +290,7 @@ export function spawnChildRuntime(
     stderrTruncated ||= next.truncated;
   });
 
-  const completion = new Promise<ChildRuntimeExit>((resolveCompletion) => {
+  return new Promise<ChildRuntimeExit>((resolveCompletion) => {
     let settled = false;
 
     const finish = (result: Omit<ChildRuntimeExit, "metadata">): void => {
@@ -316,12 +334,6 @@ export function spawnChildRuntime(
       });
     });
   });
-
-  return {
-    child,
-    metadata,
-    completion,
-  };
 }
 
 function appendCapturedOutput(
