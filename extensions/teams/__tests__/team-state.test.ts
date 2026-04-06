@@ -219,5 +219,34 @@ describe("team-state helpers", () => {
       expect(setStatus).toHaveBeenLastCalledWith("team-mode", undefined);
       expect(removeRuntimeLock).toHaveBeenCalledWith("alpha");
     });
+
+    it("keeps team mode active when runtime-lock removal fails", async () => {
+      const removeRuntimeLock = vi.fn(async () => {
+        throw new Error("lock removal failed");
+      });
+      const state = new TeamModeState({ removeRuntimeLock });
+      const { ctx, setEditorComponent, setStatus, setWidget } =
+        createStubCommandContext();
+
+      await state.activate(ctx, {
+        snapshot: {
+          name: "alpha",
+          workspacePath: "/workspace",
+          worktreeDir: "/workspace/worktrees",
+          model: "anthropic/model",
+          thinkingLevel: "medium",
+          createdAt: new Date().toISOString(),
+          config: { agents: [] },
+        },
+      });
+
+      await expect(state.deactivate(ctx)).rejects.toThrow(
+        "lock removal failed",
+      );
+      expect(state.isActive()).toBe(true);
+      expect(setEditorComponent).toHaveBeenCalledTimes(1);
+      expect(setWidget).toHaveBeenCalledTimes(1);
+      expect(setStatus).toHaveBeenCalledTimes(1);
+    });
   });
 });

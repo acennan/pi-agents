@@ -24,8 +24,11 @@ import {
   copyBundledPromptTemplates,
   createTeamDir,
   ensureTeamsRoot,
+  InvalidTeamNameError,
+  removeTeamDir,
   type TeamSnapshot,
   teamExists,
+  validateTeamName,
   writeTeamSnapshot,
 } from "../storage/team-home.ts";
 import {
@@ -114,6 +117,7 @@ export class TeamStartupPreflightError extends Error {
     | "team-exists"
     | "invalid-config"
     | "invalid-model"
+    | "invalid-team-name"
     | "invalid-thinking";
 
   constructor(
@@ -149,6 +153,8 @@ export async function preflightCreateTeam(
     gitRunner,
     beadsRunner,
   } = params;
+
+  validateCreateTeamName(name);
 
   await ensureTeamsRoot();
 
@@ -218,40 +224,62 @@ export async function createTeam(
     : undefined;
   const resolvedExtensionDir = resolve(extensionSourceDir);
 
+  validateCreateTeamName(name);
+
   // Ensure the root teams directory exists before we check team existence,
   // so the check itself does not fail on a missing parent.
   await ensureTeamsRoot();
 
-  // Create the team-specific directory (throws TeamAlreadyExistsError if it exists).
-  await createTeamDir(name);
+  let createdTeamDirectory = false;
 
-  // Copy bundled prompt templates to the shared location.
-  // This is idempotent — existing customised templates are not overwritten.
-  await copyBundledPromptTemplates(resolvedExtensionDir);
+  try {
+    // Create the team-specific directory (throws TeamAlreadyExistsError if it exists).
+    await createTeamDir(name);
+    createdTeamDirectory = true;
 
-  // Build and persist the snapshot.
-  const snapshot: TeamSnapshot = {
-    name,
-    workspacePath: resolvedWorkspace,
-    worktreeDir: resolvedWorktreeDir,
-    model,
-    thinkingLevel,
-    ...(resolvedConfigSource !== undefined && {
-      configSourcePath: resolvedConfigSource,
-    }),
-    createdAt: new Date().toISOString(),
-    config,
-  };
+    // Copy bundled prompt templates to the shared location.
+    // This is idempotent — existing customised templates are not overwritten.
+    await copyBundledPromptTemplates(resolvedExtensionDir);
 
-  await writeTeamSnapshot(snapshot);
+    // Build and persist the snapshot.
+    const snapshot: TeamSnapshot = {
+      name,
+      workspacePath: resolvedWorkspace,
+      worktreeDir: resolvedWorktreeDir,
+      model,
+      thinkingLevel,
+      ...(resolvedConfigSource !== undefined && {
+        configSourcePath: resolvedConfigSource,
+      }),
+      createdAt: new Date().toISOString(),
+      config,
+    };
 
-  // `createTeamDir()` above guarantees this team directory was just created, so
-  // no competing leader can already have a runtime lock here. We therefore
-  // write the initial lease directly rather than going through stale/active
-  // contention checks that only matter for restart/delete recovery flows.
-  await writeRuntimeLock(name, createRuntimeLockRecord(sessionId));
+    await writeTeamSnapshot(snapshot);
 
-  return snapshot;
+    // `createTeamDir()` above guarantees this team directory was just created, so
+    // no competing leader can already have a runtime lock here. We therefore
+    // write the initial lease directly rather than going through stale/active
+    // contention checks that only matter for restart/delete recovery flows.
+    await writeRuntimeLock(name, createRuntimeLockRecord(sessionId));
+
+    return snapshot;
+  } catch (err: unknown) {
+    if (!createdTeamDirectory) {
+      throw err;
+    }
+
+    try {
+      await removeTeamDir(name);
+    } catch (cleanupErr: unknown) {
+      throw new AggregateError(
+        [err, cleanupErr],
+        `Failed to create team "${name}" and rollback its partial state`,
+      );
+    }
+
+    throw err;
+  }
 }
 
 export function validateModelReference(
@@ -359,6 +387,20 @@ export function validateExpandedTeamRuntimeSettings(
         `Sub-agent "${definition.name}" thinking level`,
       );
     }
+  }
+}
+
+function validateCreateTeamName(name: string): void {
+  try {
+    validateTeamName(name);
+  } catch (err: unknown) {
+    if (err instanceof InvalidTeamNameError) {
+      throw new TeamStartupPreflightError("invalid-team-name", err.message, {
+        cause: err,
+      });
+    }
+
+    throw err;
   }
 }
 

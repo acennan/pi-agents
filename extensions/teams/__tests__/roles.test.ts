@@ -46,9 +46,9 @@ describe("roles", () => {
       expect(getProcessRole()).toBe(role);
     });
 
-    it("returns leader for an unrecognised PI_TEAM_ROLE value", () => {
+    it('returns "unknown" for an unrecognised PI_TEAM_ROLE value', () => {
       process.env.PI_TEAM_ROLE = "unknown-role";
-      expect(getProcessRole()).toBe("leader");
+      expect(getProcessRole()).toBe("unknown");
     });
   });
 
@@ -61,6 +61,11 @@ describe("roles", () => {
       process.env.PI_TEAM_ROLE = "code";
       expect(isLeader()).toBe(false);
     });
+
+    it("returns false when PI_TEAM_ROLE is an unknown value", () => {
+      process.env.PI_TEAM_ROLE = "unknown-role";
+      expect(isLeader()).toBe(false);
+    });
   });
 
   describe("isMemberAgent", () => {
@@ -70,6 +75,11 @@ describe("roles", () => {
 
     it("returns true when PI_TEAM_ROLE is a member role", () => {
       process.env.PI_TEAM_ROLE = "review";
+      expect(isMemberAgent()).toBe(true);
+    });
+
+    it("returns true when PI_TEAM_ROLE is an unknown value", () => {
+      process.env.PI_TEAM_ROLE = "unknown-role";
       expect(isMemberAgent()).toBe(true);
     });
   });

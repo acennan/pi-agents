@@ -365,15 +365,15 @@ export class TeamModeState {
     ctx: ExtensionContext | ExtensionCommandContext,
   ): Promise<void> {
     const activeTeam = this.#activeTeam;
-    this.#activeTeam = undefined;
-
-    ctx.ui.setEditorComponent(undefined);
-    ctx.ui.setWidget("team-dashboard", undefined);
-    ctx.ui.setStatus("team-mode", undefined);
 
     if (activeTeam !== undefined) {
       await this.#removeRuntimeLock(activeTeam.snapshot.name);
     }
+
+    ctx.ui.setEditorComponent(undefined);
+    ctx.ui.setWidget("team-dashboard", undefined);
+    ctx.ui.setStatus("team-mode", undefined);
+    this.#activeTeam = undefined;
   }
 }
 

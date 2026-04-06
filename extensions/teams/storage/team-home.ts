@@ -17,9 +17,9 @@
  */
 
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,24 @@ export function teamsRootDir(): string {
 
 /** Returns the directory for a specific team: `~/.pi/teams/<name>/`. */
 export function teamDir(teamName: string): string {
-  return join(teamsRootDir(), teamName);
+  const validatedTeamName = validateTeamName(teamName);
+  const rootDir = resolve(teamsRootDir());
+  const resolvedTeamDir = resolve(rootDir, validatedTeamName);
+  const relativePath = relative(rootDir, resolvedTeamDir);
+
+  if (
+    relativePath.length === 0 ||
+    relativePath === "." ||
+    relativePath.startsWith("..") ||
+    isAbsolute(relativePath)
+  ) {
+    throw new InvalidTeamNameError(
+      teamName,
+      `Team name "${teamName}" resolves outside the teams root`,
+    );
+  }
+
+  return resolvedTeamDir;
 }
 
 /** Returns the shared prompt-templates directory: `~/.pi/teams/prompt-templates/`. */
@@ -113,13 +130,23 @@ export async function ensureTeamsRoot(): Promise<void> {
  * Create the directory structure for a single team.
  *
  * Throws `TeamAlreadyExistsError` when the team directory is already present.
- * All intermediate directories are created as needed.
  */
 export async function createTeamDir(teamName: string): Promise<void> {
-  if (teamExists(teamName)) {
-    throw new TeamAlreadyExistsError(teamName);
+  const path = teamDir(teamName);
+  await mkdir(teamsRootDir(), { recursive: true });
+
+  try {
+    await mkdir(path);
+  } catch (err: unknown) {
+    if (isAlreadyExistsError(err)) {
+      throw new TeamAlreadyExistsError(teamName);
+    }
+    throw err;
   }
-  await mkdir(teamDir(teamName), { recursive: true });
+}
+
+export async function removeTeamDir(teamName: string): Promise<void> {
+  await rm(teamDir(teamName), { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +231,42 @@ export class TeamAlreadyExistsError extends Error {
   }
 }
 
+/** Thrown when a supplied team name is unsafe or unsupported. */
+export class InvalidTeamNameError extends Error {
+  readonly code = "invalid-team-name";
+  readonly teamName: string;
+
+  constructor(teamName: string, message?: string) {
+    super(
+      message ??
+        `Team name "${teamName}" is invalid. Use only letters, numbers, hyphens, and underscores.`,
+    );
+    this.name = "InvalidTeamNameError";
+    this.teamName = teamName;
+  }
+}
+
+export function validateTeamName(teamName: string): string {
+  const trimmedTeamName = teamName.trim();
+
+  if (trimmedTeamName.length === 0) {
+    throw new InvalidTeamNameError(teamName, "Team name must not be empty");
+  }
+
+  if (trimmedTeamName !== teamName) {
+    throw new InvalidTeamNameError(
+      teamName,
+      `Team name "${teamName}" must not include leading or trailing whitespace`,
+    );
+  }
+
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(teamName)) {
+    throw new InvalidTeamNameError(teamName);
+  }
+
+  return teamName;
+}
+
 // ---------------------------------------------------------------------------
 // Type guard
 // ---------------------------------------------------------------------------
@@ -220,4 +283,8 @@ function isTeamSnapshot(value: unknown): value is TeamSnapshot {
     typeof v.createdAt === "string" &&
     "config" in v
   );
+}
+
+function isAlreadyExistsError(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && "code" in err && err.code === "EEXIST";
 }

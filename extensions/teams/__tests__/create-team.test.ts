@@ -135,7 +135,19 @@ describe("createTeam", () => {
     );
   });
 
-  it("does not write a runtime lock when snapshot persistence fails", async () => {
+  it("rejects invalid team names", async () => {
+    await expect(
+      createTeam({
+        ...baseParams(),
+        name: "../../tmp/pwn",
+      }),
+    ).rejects.toMatchObject({
+      name: "TeamStartupPreflightError",
+      code: "invalid-team-name",
+    });
+  });
+
+  it("rolls back the team directory when snapshot persistence fails", async () => {
     vi.spyOn(teamHome, "writeTeamSnapshot").mockRejectedValueOnce(
       new Error("snapshot write failed"),
     );
@@ -144,7 +156,7 @@ describe("createTeam", () => {
       "snapshot write failed",
     );
 
-    expect(existsSync(teamDir("my-team"))).toBe(true);
+    expect(existsSync(teamDir("my-team"))).toBe(false);
     expect(existsSync(runtimeLockPath("my-team"))).toBe(false);
   });
 

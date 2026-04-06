@@ -18,6 +18,8 @@ export type ProcessRole =
   | "test"
   | "commit";
 
+export type ResolvedProcessRole = ProcessRole | "unknown";
+
 /** The environment variable that identifies the process role. */
 const ROLE_ENV_VAR = "PI_TEAM_ROLE";
 
@@ -29,16 +31,27 @@ const TEAM_NAME_ENV_VAR = "PI_TEAM_NAME";
  *
  * Returns "leader" when PI_TEAM_ROLE is absent or explicitly set to "leader"
  * (i.e. the user's interactive pi session).
+ *
+ * Unknown values fail closed to "unknown" so misconfigured member runtimes do
+ * not accidentally gain leader-only capabilities.
  */
-export function getProcessRole(): ProcessRole {
+export function getProcessRole(): ResolvedProcessRole {
   const raw = process.env[ROLE_ENV_VAR];
   if (!raw || raw === "leader") return "leader";
 
-  const valid: ProcessRole[] = ["code", "simplify", "review", "test", "commit"];
-  if ((valid as string[]).includes(raw)) return raw as ProcessRole;
+  const valid: readonly ProcessRole[] = [
+    "leader",
+    "code",
+    "simplify",
+    "review",
+    "test",
+    "commit",
+  ];
+  if ((valid as readonly string[]).includes(raw)) {
+    return raw as ProcessRole;
+  }
 
-  // Unknown value — treat as leader so commands are not silently swallowed.
-  return "leader";
+  return "unknown";
 }
 
 /** Returns true when this process is the leader (i.e. the user's interactive session). */

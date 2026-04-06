@@ -7,6 +7,7 @@ import {
   copyBundledPromptTemplates,
   createTeamDir,
   ensureTeamsRoot,
+  InvalidTeamNameError,
   readTeamSnapshot,
   sharedPromptTemplatesDir,
   TeamAlreadyExistsError,
@@ -63,7 +64,13 @@ describe("path helpers", () => {
   });
 
   it("teamDir includes the team name under teamsRootDir", () => {
-    expect(teamDir("my-team")).toBe(join(TEST_ROOT, "my-team"));
+    expect(teamDir("my-team")).toBe(resolve(TEST_ROOT, "my-team"));
+  });
+
+  it("rejects invalid team names before building a path", () => {
+    expect(() => teamDir("../../tmp/pwn")).toThrow(InvalidTeamNameError);
+    expect(() => teamDir("bad/name")).toThrow(InvalidTeamNameError);
+    expect(() => teamDir(" trailing ")).toThrow(InvalidTeamNameError);
   });
 
   it("sharedPromptTemplatesDir is inside teamsRootDir", () => {
@@ -133,6 +140,20 @@ describe("createTeamDir", () => {
     const err = await createTeamDir("named-team").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TeamAlreadyExistsError);
     expect((err as TeamAlreadyExistsError).teamName).toBe("named-team");
+  });
+
+  it("atomically rejects one of two concurrent creates for the same team", async () => {
+    const results = await Promise.allSettled([
+      createTeamDir("race-team"),
+      createTeamDir("race-team"),
+    ]);
+
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toBeInstanceOf(TeamAlreadyExistsError);
   });
 });
 

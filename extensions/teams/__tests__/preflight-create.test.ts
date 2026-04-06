@@ -119,6 +119,22 @@ describe("preflightCreateTeam", () => {
     });
   });
 
+  it("rejects invalid team names before touching the filesystem", async () => {
+    const repoDir = await createGitRepo("repo-invalid-team-name");
+    const worktreeDir = join(TEST_ROOT, "worktrees-invalid-team-name");
+
+    await expect(
+      preflightCreateTeam({
+        ...baseParams(repoDir, worktreeDir),
+        name: "../../tmp/pwn",
+      }),
+    ).rejects.toMatchObject({
+      name: "TeamStartupPreflightError",
+      code: "invalid-team-name",
+    });
+    expect(existsSync(teamDir("alpha-team"))).toBe(false);
+  });
+
   it("fails before creating the worktree directory when the workspace is not a git repo", async () => {
     const workspaceDir = join(TEST_ROOT, "not-a-repo");
     const worktreeDir = join(TEST_ROOT, "worktrees-not-a-repo");
