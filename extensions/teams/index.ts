@@ -46,144 +46,39 @@ export default function teamsExtension(pi: ExtensionAPI): void {
 
   router.register("create", {
     description: "Create a team from config and enter team mode",
-    handler: async (args, ctx) => {
-      if (teamModeState.isActive()) {
-        const activeTeam = teamModeState.getActiveTeam();
-        return `Team "${activeTeam?.snapshot.name ?? "unknown"}" is already active in this session`;
-      }
-
-      const parsed = parseCreateCommandArgs(args);
-      const paths = resolveCreateCommandPaths(ctx.cwd, parsed.name, {
-        configPath: parsed.configPath,
-        worktreeDir: parsed.worktreeDir,
-      });
-      const loadResult = await loadTeamConfigFile(
-        paths.configPath ?? DEFAULT_CONFIG_PATH,
-        BUNDLED_PROMPT_TEMPLATES_DIR,
-      );
-
-      const currentModel = ctx.model
-        ? `${ctx.model.provider}/${ctx.model.id}`
-        : undefined;
-      const modelReference = parsed.model ?? currentModel;
-      if (modelReference === undefined) {
-        throw new Error(
-          "No active model is selected. Choose one with /model before creating a team, or pass --model provider/model-id.",
-        );
-      }
-
-      const preflight = await preflightCreateTeam({
-        name: parsed.name,
-        workspacePath: ctx.cwd,
-        worktreeDir: paths.worktreeDir,
-        model: modelReference,
-        thinkingLevel: parsed.thinkingLevel ?? pi.getThinkingLevel(),
-        config: loadResult.config,
-        configSourcePath: paths.configPath,
-        extensionSourceDir: EXTENSION_SOURCE_DIR,
-        availableModels: ctx.modelRegistry.getAvailable(),
-      });
-
-      const snapshot = await createTeam({
-        name: parsed.name,
-        workspacePath: preflight.workspacePath,
-        worktreeDir: preflight.worktreeDir,
-        model: modelReference,
-        thinkingLevel: parsed.thinkingLevel ?? pi.getThinkingLevel(),
-        configSourcePath: paths.configPath,
-        config: preflight.config,
-        extensionSourceDir: EXTENSION_SOURCE_DIR,
-      });
-
-      await teamModeState.activate(ctx, { snapshot });
-
-      try {
-        const startResult = await teamManager.startTeam({
-          snapshot: {
-            ...snapshot,
-            config: preflight.config,
-          },
-          lifecycleSink: createLifecycleSink(ctx, teamModeState),
-        });
-
-        return formatSuccessMessage(
-          `Created team "${snapshot.name}", started ${startResult.codeAgentCount} code agent${pluralize(startResult.codeAgentCount)}, and entered team mode.`,
-          preflight.warnings,
-        );
-      } catch (error) {
-        await teamModeState.deactivate(ctx);
-        throw error;
-      }
-    },
+    handler: (args, ctx) =>
+      handleCreateCommand(ctx, teamManager, teamModeState, args, () =>
+        pi.getThinkingLevel(),
+      ),
   });
 
   router.register("stop", {
     description: "Stop the active team and leave team mode",
-    handler: async (_args, ctx) => {
-      const activeTeam = teamModeState.getActiveTeam();
-      if (activeTeam === undefined) {
-        return "No team is currently active.";
-      }
-
-      const stopResult = await teamManager.stopActiveTeam();
-      await teamModeState.deactivate(ctx);
-      const stoppedAgentCount = stopResult?.stoppedAgentCount ?? 0;
-      return `Stopped team "${activeTeam.snapshot.name}", terminated ${stoppedAgentCount} code agent${pluralize(stoppedAgentCount)}, and left team mode.`;
-    },
+    handler: (_args, ctx) => handleStopCommand(ctx, teamManager, teamModeState),
   });
 
   router.register("pause", {
     description: "Pause new task claims without stopping the team",
-    handler: async () => notImplementedMessage("pause", "TF-15"),
+    handler: (_args, ctx) =>
+      handlePauseCommand(ctx, teamManager, teamModeState),
   });
 
   router.register("resume", {
     description: "Resume task claiming after a pause",
-    handler: async () => notImplementedMessage("resume", "TF-15"),
+    handler: (_args, ctx) =>
+      handleResumeCommand(ctx, teamManager, teamModeState),
   });
 
   router.register("restart", {
     description: "Restart a stored team from its persisted snapshot",
-    handler: async (args, ctx) => {
-      if (teamModeState.isActive()) {
-        const activeTeam = teamModeState.getActiveTeam();
-        return `Team "${activeTeam?.snapshot.name ?? "unknown"}" is already active in this session`;
-      }
-
-      const parsed = parseRestartCommandArgs(args);
-      const preflight = await preflightRestartTeam({
-        teamName: parsed.teamName,
-        currentWorkspacePath: ctx.cwd,
-        availableModels: ctx.modelRegistry.getAvailable(),
-      });
-      const leaseResult = await prepareRestartTeamLease({
-        teamName: parsed.teamName,
-      });
-
-      await teamModeState.activate(ctx, {
-        snapshot: preflight.snapshot,
-      });
-
-      try {
-        const startResult = await teamManager.startTeam({
-          snapshot: preflight.snapshot,
-          lifecycleSink: createLifecycleSink(ctx, teamModeState),
-        });
-
-        return formatSuccessMessage(
-          `${formatRestartSuccessMessage(preflight.snapshot.name, leaseResult)} Started ${startResult.codeAgentCount} code agent${pluralize(startResult.codeAgentCount)}.`,
-          preflight.warnings,
-        );
-      } catch (error) {
-        await teamModeState.deactivate(ctx);
-        throw error;
-      }
-    },
+    handler: (args, ctx) =>
+      handleRestartCommand(ctx, teamManager, teamModeState, args),
   });
 
   router.register("delete", {
     description: "Delete a stored team after it has been stopped",
-    handler: async () => notImplementedMessage("delete", "TF-25"),
+    handler: (_args, ctx) =>
+      handleDeleteCommand(ctx, teamManager, teamModeState),
   });
 
   router.register("send", {
@@ -213,13 +108,7 @@ export default function teamsExtension(pi: ExtensionAPI): void {
 
   router.register("exit", {
     description: "Explain how to leave team mode safely",
-    handler: async () => {
-      if (!teamModeState.isActive()) {
-        return "Team mode is not active.";
-      }
-
-      return "Run /team stop first. `/team exit` does not leave an active team running in the background.";
-    },
+    handler: (_args, ctx) => handleExitCommand(ctx, teamManager, teamModeState),
   });
 
   pi.registerCommand("team", {
@@ -266,6 +155,188 @@ export default function teamsExtension(pi: ExtensionAPI): void {
   });
 }
 
+async function handleCreateCommand(
+  ctx: ExtensionCommandContext,
+  teamManager: TeamManager,
+  teamModeState: TeamModeState,
+  args: string,
+  getThinkingLevel: () => string,
+): Promise<string> {
+  if (teamModeState.isActive()) {
+    const activeTeam = teamModeState.getActiveTeam();
+    return formatAlreadyActiveMessage(activeTeam?.snapshot.name);
+  }
+
+  const parsed = parseCreateCommandArgs(args);
+  const paths = resolveCreateCommandPaths(ctx.cwd, parsed.name, {
+    configPath: parsed.configPath,
+    worktreeDir: parsed.worktreeDir,
+  });
+  const loadResult = await loadTeamConfigFile(
+    paths.configPath ?? DEFAULT_CONFIG_PATH,
+    BUNDLED_PROMPT_TEMPLATES_DIR,
+  );
+
+  const currentModel = ctx.model
+    ? `${ctx.model.provider}/${ctx.model.id}`
+    : undefined;
+  const modelReference = parsed.model ?? currentModel;
+  if (modelReference === undefined) {
+    throw new Error(
+      "No active model is selected. Choose one with /model before creating a team, or pass --model provider/model-id.",
+    );
+  }
+
+  const thinkingLevel = parsed.thinkingLevel ?? getThinkingLevel();
+  const preflight = await preflightCreateTeam({
+    name: parsed.name,
+    workspacePath: ctx.cwd,
+    worktreeDir: paths.worktreeDir,
+    model: modelReference,
+    thinkingLevel,
+    config: loadResult.config,
+    configSourcePath: paths.configPath,
+    extensionSourceDir: EXTENSION_SOURCE_DIR,
+    availableModels: ctx.modelRegistry.getAvailable(),
+  });
+
+  const snapshot = await createTeam({
+    name: parsed.name,
+    workspacePath: preflight.workspacePath,
+    worktreeDir: preflight.worktreeDir,
+    model: modelReference,
+    thinkingLevel,
+    configSourcePath: paths.configPath,
+    config: preflight.config,
+    extensionSourceDir: EXTENSION_SOURCE_DIR,
+  });
+
+  await teamModeState.activate(ctx, { snapshot });
+
+  try {
+    const startResult = await teamManager.startTeam({
+      snapshot: {
+        ...snapshot,
+        config: preflight.config,
+      },
+      lifecycleSink: createLifecycleSink(ctx, teamModeState),
+    });
+
+    return formatSuccessMessage(
+      `Created team "${snapshot.name}", started ${startResult.codeAgentCount} code agent${pluralize(startResult.codeAgentCount)}, and entered team mode.`,
+      preflight.warnings,
+    );
+  } catch (error) {
+    await teamModeState.deactivate(ctx);
+    throw error;
+  }
+}
+
+async function handleStopCommand(
+  ctx: ExtensionCommandContext,
+  teamManager: TeamManager,
+  teamModeState: TeamModeState,
+): Promise<string> {
+  const activeTeam = teamModeState.getActiveTeam();
+  if (activeTeam === undefined) {
+    return "No team is currently active.";
+  }
+
+  const stopResult = await teamManager.stopActiveTeam();
+  await teamModeState.deactivate(ctx);
+  const stoppedAgentCount = stopResult?.stoppedAgentCount ?? 0;
+  return `Stopped team "${activeTeam.snapshot.name}", terminated ${stoppedAgentCount} code agent${pluralize(stoppedAgentCount)}, and left team mode.`;
+}
+
+async function handlePauseCommand(
+  ctx: ExtensionCommandContext,
+  teamManager: TeamManager,
+  teamModeState: TeamModeState,
+): Promise<string> {
+  void ctx;
+  void teamManager;
+  void teamModeState;
+  return notImplementedMessage("pause", "TF-15");
+}
+
+async function handleResumeCommand(
+  ctx: ExtensionCommandContext,
+  teamManager: TeamManager,
+  teamModeState: TeamModeState,
+): Promise<string> {
+  void ctx;
+  void teamManager;
+  void teamModeState;
+  return notImplementedMessage("resume", "TF-15");
+}
+
+async function handleRestartCommand(
+  ctx: ExtensionCommandContext,
+  teamManager: TeamManager,
+  teamModeState: TeamModeState,
+  args: string,
+): Promise<string> {
+  if (teamModeState.isActive()) {
+    const activeTeam = teamModeState.getActiveTeam();
+    return formatAlreadyActiveMessage(activeTeam?.snapshot.name);
+  }
+
+  const parsed = parseRestartCommandArgs(args);
+  const preflight = await preflightRestartTeam({
+    teamName: parsed.teamName,
+    currentWorkspacePath: ctx.cwd,
+    availableModels: ctx.modelRegistry.getAvailable(),
+  });
+  const leaseResult = await prepareRestartTeamLease({
+    teamName: parsed.teamName,
+  });
+
+  await teamModeState.activate(ctx, {
+    snapshot: preflight.snapshot,
+  });
+
+  try {
+    const startResult = await teamManager.startTeam({
+      snapshot: preflight.snapshot,
+      lifecycleSink: createLifecycleSink(ctx, teamModeState),
+    });
+
+    return formatSuccessMessage(
+      `${formatRestartSuccessMessage(preflight.snapshot.name, leaseResult)} Started ${startResult.codeAgentCount} code agent${pluralize(startResult.codeAgentCount)}.`,
+      preflight.warnings,
+    );
+  } catch (error) {
+    await teamModeState.deactivate(ctx);
+    throw error;
+  }
+}
+
+async function handleDeleteCommand(
+  ctx: ExtensionCommandContext,
+  teamManager: TeamManager,
+  teamModeState: TeamModeState,
+): Promise<string> {
+  void ctx;
+  void teamManager;
+  void teamModeState;
+  return notImplementedMessage("delete", "TF-25");
+}
+
+async function handleExitCommand(
+  ctx: ExtensionCommandContext,
+  teamManager: TeamManager,
+  teamModeState: TeamModeState,
+): Promise<string> {
+  void ctx;
+  void teamManager;
+
+  if (!teamModeState.isActive()) {
+    return "Team mode is not active.";
+  }
+
+  return "Run /team stop first. `/team exit` does not leave an active team running in the background.";
+}
+
 function createLifecycleSink(
   ctx: ExtensionCommandContext,
   teamModeState: TeamModeState,
@@ -277,6 +348,10 @@ function createLifecycleSink(
     setTeamStatus: (status: string) => teamModeState.setTeamStatus(status),
     updateAgent: () => teamModeState.updateAgent(),
   };
+}
+
+function formatAlreadyActiveMessage(teamName: string | undefined): string {
+  return `Team "${teamName ?? "unknown"}" is already active in this session`;
 }
 
 function formatSuccessMessage(
