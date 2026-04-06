@@ -32,9 +32,9 @@ Project documentation is a work in progress, and all the files are currently in 
 ### Commit Workflow
 1. **Important:** DO NOT MODIFY ANY SOURCE CODE FILES
 2. **Find**: Use the user-supplied identifier to load the task from beads
-3. **Git**: Commit the changes against the implemenation identifier found in the task external reference field. Include a summary of the changes in the commit body, and both task and implementation identifiers in the commit footer. 
-4. **Complete**: Use `br close <id>` to close the beads task
-5. **Sync**: Always run `br sync --flush-only` at the session end
+3. **Complete**: Use `br close <id>` to close the beads task
+4. **Sync**: Always run `br sync --flush-only` at the session end
+5. **Git**: Commit the changes against the implemenation identifier found in the task external reference field. Include a summary of the changes in the commit body, and both task and implementation identifiers in the commit footer. 
 
 ## Development Environment
 
