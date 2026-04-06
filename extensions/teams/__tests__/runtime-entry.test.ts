@@ -1,8 +1,10 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { getModels } from "@mariozechner/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { MailboxEntry } from "../agents/mailbox.ts";
 import {
   bootstrapTeamChildRuntime,
+  deliverMailboxEntryToSession,
   parseTeamChildRuntimeArgs,
   runTeamChildRuntime,
   TEAM_CHILD_RUNTIME_READY_EVENT,
@@ -151,6 +153,9 @@ describe("bootstrapTeamChildRuntime", () => {
     const model = requireModel("anthropic");
     const session = {
       dispose: vi.fn(),
+      followUp: vi.fn(),
+      setFollowUpMode: vi.fn(),
+      steer: vi.fn(),
     };
     const createSession = vi.fn(async (_options) => ({
       session: session as never,
@@ -217,6 +222,54 @@ describe("bootstrapTeamChildRuntime", () => {
       "ls",
     ]);
     expect(result.session).toBe(session);
+    expect(session.setFollowUpMode).toHaveBeenCalledWith("one-at-a-time");
+  });
+});
+
+describe("deliverMailboxEntryToSession", () => {
+  it("maps queued-work, send, and broadcast entries to follow-up delivery", async () => {
+    const session = {
+      followUp: vi.fn(async () => {}),
+      steer: vi.fn(async () => {}),
+    };
+
+    for (const entry of [
+      { subject: "queued-work", message: "task A" },
+      { subject: "send", message: "task B" },
+      { subject: "broadcast", message: "task C" },
+    ] satisfies Pick<MailboxEntry, "message" | "subject">[]) {
+      await expect(deliverMailboxEntryToSession(entry, session)).resolves.toBe(
+        "follow-up",
+      );
+    }
+
+    expect(session.followUp).toHaveBeenNthCalledWith(1, "task A");
+    expect(session.followUp).toHaveBeenNthCalledWith(2, "task B");
+    expect(session.followUp).toHaveBeenNthCalledWith(3, "task C");
+    expect(session.steer).not.toHaveBeenCalled();
+  });
+
+  it("maps steering entries to session.steer and ignores unrelated subjects", async () => {
+    const session = {
+      followUp: vi.fn(async () => {}),
+      steer: vi.fn(async () => {}),
+    };
+
+    await expect(
+      deliverMailboxEntryToSession(
+        { subject: "steer", message: "switch direction" },
+        session,
+      ),
+    ).resolves.toBe("steer");
+    await expect(
+      deliverMailboxEntryToSession(
+        { subject: "task-complete", message: "done" },
+        session,
+      ),
+    ).resolves.toBe("ignored");
+
+    expect(session.steer).toHaveBeenCalledWith("switch direction");
+    expect(session.followUp).not.toHaveBeenCalled();
   });
 });
 
@@ -228,7 +281,12 @@ describe("runTeamChildRuntime", () => {
   it("emits a ready event and disposes the session on shutdown", async () => {
     const model = requireModel("openai");
     const dispose = vi.fn();
-    const session = { dispose };
+    const session = {
+      dispose,
+      followUp: vi.fn(async () => {}),
+      setFollowUpMode: vi.fn(),
+      steer: vi.fn(async () => {}),
+    };
     const stdoutChunks: string[] = [];
 
     await runTeamChildRuntime({

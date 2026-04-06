@@ -7,6 +7,8 @@ import {
   createTeamModeAutocompleteProvider,
   createTeamModeHelpText,
   createTeamModeHotkeysText,
+  parseAgentMessageCommandArgs,
+  parseBroadcastCommandArgs,
   parseCreateCommandArgs,
   parseRestartCommandArgs,
   resolveCreateCommandPaths,
@@ -139,6 +141,46 @@ describe("team-state helpers", () => {
     it("rejects extra restart command arguments", () => {
       expect(() => parseRestartCommandArgs("alpha-team extra")).toThrow(
         "/team restart accepts exactly one <team-name>",
+      );
+    });
+
+    it("parses directed send/steer command arguments", () => {
+      expect(
+        parseAgentMessageCommandArgs('code-1 "focus on tests"', "send"),
+      ).toEqual({
+        agentName: "code-1",
+        message: "focus on tests",
+      });
+      expect(
+        parseAgentMessageCommandArgs("review-1 please re-check", "steer"),
+      ).toEqual({
+        agentName: "review-1",
+        message: "please re-check",
+      });
+    });
+
+    it("requires both an agent name and message for directed operator commands", () => {
+      expect(() => parseAgentMessageCommandArgs("code-1", "send")).toThrow(
+        "/team send requires <agent-name> <message>",
+      );
+      expect(() => parseAgentMessageCommandArgs("", "steer")).toThrow(
+        "/team steer requires <agent-name> <message>",
+      );
+    });
+
+    it("parses broadcast messages with and without an explicit code target", () => {
+      expect(parseBroadcastCommandArgs("all hands on deck")).toEqual({
+        message: "all hands on deck",
+      });
+      expect(parseBroadcastCommandArgs("code focus on tests")).toEqual({
+        agentType: "code",
+        message: "focus on tests",
+      });
+    });
+
+    it("rejects unsupported broadcast target types", () => {
+      expect(() => parseBroadcastCommandArgs("review check this")).toThrow(
+        'Unsupported /team broadcast target type "review". Only "code" is allowed.',
       );
     });
 

@@ -97,6 +97,16 @@ export type ParsedRestartCommandArgs = {
   teamName: string;
 };
 
+export type ParsedAgentMessageCommandArgs = {
+  agentName: string;
+  message: string;
+};
+
+export type ParsedBroadcastCommandArgs = {
+  agentType?: "code";
+  message: string;
+};
+
 export type ActiveTeamMode = {
   snapshot: TeamSnapshot;
 };
@@ -294,7 +304,9 @@ function buildCreateArgs(flags: ParsedKeyValueFlags): ParsedCreateCommandArgs {
   return result;
 }
 
-function buildRestartArgs(flags: ParsedKeyValueFlags): ParsedRestartCommandArgs {
+function buildRestartArgs(
+  flags: ParsedKeyValueFlags,
+): ParsedRestartCommandArgs {
   const [teamName] = flags.tokens;
 
   if (teamName === undefined || teamName.trim().length === 0) {
@@ -308,6 +320,18 @@ function buildRestartArgs(flags: ParsedKeyValueFlags): ParsedRestartCommandArgs 
   return { teamName };
 }
 
+function isAgentTypeToken(
+  value: string,
+): value is "code" | "simplify" | "review" | "test" | "commit" {
+  return (
+    value === "code" ||
+    value === "simplify" ||
+    value === "review" ||
+    value === "test" ||
+    value === "commit"
+  );
+}
+
 export function parseCreateCommandArgs(
   rawArgs: string,
 ): ParsedCreateCommandArgs {
@@ -318,6 +342,53 @@ export function parseRestartCommandArgs(
   rawArgs: string,
 ): ParsedRestartCommandArgs {
   return buildRestartArgs(parseKeyValueFlags(splitCommandArgs(rawArgs)));
+}
+
+export function parseAgentMessageCommandArgs(
+  rawArgs: string,
+  commandName: "send" | "steer",
+): ParsedAgentMessageCommandArgs {
+  const [agentName, ...messageParts] = splitCommandArgs(rawArgs);
+
+  if (agentName === undefined || messageParts.length === 0) {
+    throw new Error(`/team ${commandName} requires <agent-name> <message>`);
+  }
+
+  return {
+    agentName,
+    message: messageParts.join(" "),
+  };
+}
+
+export function parseBroadcastCommandArgs(
+  rawArgs: string,
+): ParsedBroadcastCommandArgs {
+  const [firstToken, ...restTokens] = splitCommandArgs(rawArgs);
+
+  if (firstToken === undefined) {
+    throw new Error("/team broadcast requires [code] <message>");
+  }
+
+  if (isAgentTypeToken(firstToken)) {
+    if (firstToken !== "code") {
+      throw new Error(
+        `Unsupported /team broadcast target type "${firstToken}". Only "code" is allowed.`,
+      );
+    }
+
+    if (restTokens.length === 0) {
+      throw new Error("/team broadcast code requires <message>");
+    }
+
+    return {
+      agentType: "code",
+      message: restTokens.join(" "),
+    };
+  }
+
+  return {
+    message: [firstToken, ...restTokens].join(" "),
+  };
 }
 
 export class TeamModeEditor extends CustomEditor {

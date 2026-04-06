@@ -33,6 +33,14 @@ import {
   type SupportedThinkingLevel,
 } from "../leader/create-team.ts";
 import type { ProcessRole } from "../roles.ts";
+import {
+  classifyMailboxEntryDelivery,
+  ensureMailboxFiles,
+  type MailboxEntry,
+  startMailboxPolling,
+  teamMailboxCursorPath,
+  teamMailboxInboxPath,
+} from "./mailbox.ts";
 
 export const TEAM_CHILD_RUNTIME_READY_EVENT = "team-child-ready";
 export const TEAM_CHILD_ROLE_ENV_VAR = "PI_TEAM_ROLE";
@@ -64,9 +72,10 @@ export type TeamChildRuntimeReadyEvent = {
   taskId?: string;
 };
 
-type AgentSessionLike = Awaited<
-  ReturnType<typeof createAgentSession>
->["session"];
+type AgentSessionLike = Pick<
+  Awaited<ReturnType<typeof createAgentSession>>["session"],
+  "dispose" | "followUp" | "setFollowUpMode" | "steer"
+>;
 
 type SessionFactory = (
   options: CreateAgentSessionOptions,
@@ -98,6 +107,8 @@ export type TeamChildRuntimeRunContext = TeamChildRuntimeBootstrap & {
   requestShutdown: () => void;
   shutdownSignal: Promise<void>;
 };
+
+export type MailboxSessionLike = Pick<AgentSessionLike, "followUp" | "steer">;
 
 export class TeamChildRuntimeError extends Error {
   readonly code:
@@ -315,6 +326,8 @@ export async function bootstrapTeamChildRuntime(
     tools,
   });
 
+  session.setFollowUpMode("one-at-a-time");
+
   return {
     args,
     session,
@@ -345,9 +358,34 @@ export async function runTeamChildRuntime(
     resolveShutdown = resolve;
   });
 
+  const requestShutdown = () => {
+    resolveShutdown();
+  };
   const cleanupSignals = installSignalHandlers
-    ? installShutdownSignalHandlers(resolveShutdown)
+    ? installShutdownSignalHandlers(requestShutdown)
     : () => {};
+  const inboxPath = teamMailboxInboxPath(
+    bootstrap.args.teamName,
+    bootstrap.args.agentName,
+  );
+  const cursorPath = teamMailboxCursorPath(
+    bootstrap.args.teamName,
+    bootstrap.args.agentName,
+  );
+
+  await ensureMailboxFiles(inboxPath, cursorPath);
+
+  const mailboxPoller = startMailboxPolling({
+    inboxPath,
+    cursorPath,
+    env: {
+      ...process.env,
+      ...bootstrap.args.env,
+    },
+    handleEntry: async (entry) => {
+      await deliverMailboxEntryToSession(entry, bootstrap.session);
+    },
+  });
 
   try {
     writeLifecycleEvent(stdout, {
@@ -363,14 +401,33 @@ export async function runTeamChildRuntime(
 
     await onReady?.({
       ...bootstrap,
-      requestShutdown: resolveShutdown,
+      requestShutdown,
       shutdownSignal,
     });
 
     await shutdownSignal;
   } finally {
+    mailboxPoller.stop();
     cleanupSignals();
     bootstrap.session.dispose();
+  }
+}
+
+export async function deliverMailboxEntryToSession(
+  entry: Pick<MailboxEntry, "message" | "subject">,
+  session: MailboxSessionLike,
+): Promise<"follow-up" | "ignored" | "steer"> {
+  const delivery = classifyMailboxEntryDelivery(entry.subject);
+
+  switch (delivery) {
+    case "follow-up":
+      await session.followUp(entry.message);
+      return delivery;
+    case "steer":
+      await session.steer(entry.message);
+      return delivery;
+    case "ignored":
+      return delivery;
   }
 }
 

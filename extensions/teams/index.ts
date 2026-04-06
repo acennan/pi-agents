@@ -23,6 +23,8 @@ import {
   createTeamModeHelpText,
   createTeamModeHotkeysText,
   getTeamModeSubcommandCompletions,
+  parseAgentMessageCommandArgs,
+  parseBroadcastCommandArgs,
   parseCreateCommandArgs,
   parseRestartCommandArgs,
   resolveCreateCommandPaths,
@@ -83,17 +85,17 @@ export default function teamsExtension(pi: ExtensionAPI): void {
 
   router.register("send", {
     description: "Send a queued message to a named agent",
-    handler: async () => notImplementedMessage("send", "TF-14"),
+    handler: (args) => handleSendCommand(teamManager, args),
   });
 
   router.register("steer", {
     description: "Queue a steering message for a named agent",
-    handler: async () => notImplementedMessage("steer", "TF-14"),
+    handler: (args) => handleSteerCommand(teamManager, args),
   });
 
   router.register("broadcast", {
     description: "Broadcast a message to standing code agents",
-    handler: async () => notImplementedMessage("broadcast", "TF-14"),
+    handler: (args) => handleBroadcastCommand(teamManager, args),
   });
 
   router.register("help", {
@@ -246,6 +248,61 @@ async function handleStopCommand(
   await teamModeState.deactivate(ctx);
   const stoppedAgentCount = stopResult?.stoppedAgentCount ?? 0;
   return `Stopped team "${activeTeam.snapshot.name}", terminated ${stoppedAgentCount} code agent${pluralize(stoppedAgentCount)}, and left team mode.`;
+}
+
+async function handleSendCommand(
+  teamManager: TeamManager,
+  args: string,
+): Promise<string> {
+  const parsed = parseAgentMessageCommandArgs(args, "send");
+  const result = await teamManager.sendMessage(
+    parsed.agentName,
+    parsed.message,
+  );
+
+  if (result.ignored) {
+    return `Ignoring /team send because team "${result.teamName}" is stopping.`;
+  }
+
+  return `Queued message for agent "${parsed.agentName}".`;
+}
+
+async function handleSteerCommand(
+  teamManager: TeamManager,
+  args: string,
+): Promise<string> {
+  const parsed = parseAgentMessageCommandArgs(args, "steer");
+  const result = await teamManager.steerMessage(
+    parsed.agentName,
+    parsed.message,
+  );
+
+  if (result.ignored) {
+    return `Ignoring /team steer because team "${result.teamName}" is stopping.`;
+  }
+
+  return `Queued steering message for agent "${parsed.agentName}". It will be delivered between turns after the current tool calls finish.`;
+}
+
+async function handleBroadcastCommand(
+  teamManager: TeamManager,
+  args: string,
+): Promise<string> {
+  const parsed = parseBroadcastCommandArgs(args);
+  const result = await teamManager.broadcastMessage(
+    parsed.message,
+    parsed.agentType,
+  );
+
+  if (result.ignored) {
+    return `Ignoring /team broadcast because team "${result.teamName}" is stopping.`;
+  }
+
+  if (result.targetNames.length === 0) {
+    return `No standing ${result.agentType} agents are running to receive the broadcast.`;
+  }
+
+  return `Queued broadcast message for ${result.targetNames.length} ${result.agentType} agent${pluralize(result.targetNames.length)}.`;
 }
 
 async function handlePauseCommand(

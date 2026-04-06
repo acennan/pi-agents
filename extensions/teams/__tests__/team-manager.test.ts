@@ -1,5 +1,13 @@
-import { resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { existsSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  ensureTeamMailbox,
+  readMailboxEntries,
+  teamMailboxInboxPath,
+} from "../agents/mailbox.ts";
 import type {
   ChildRuntimeExit,
   SpawnChildRuntimeOptions,
@@ -12,6 +20,8 @@ import {
   TeamManagerError,
 } from "../leader/team-manager.ts";
 import type { TeamSnapshot } from "../storage/team-home.ts";
+
+const TEST_ROOT = join(tmpdir(), "pi-teams-manager-test-tmp");
 
 type ControlledRuntime = {
   options: SpawnChildRuntimeOptions;
@@ -140,6 +150,16 @@ function getAgentNames(agents: ManagedCodeAgent[]): string[] {
 }
 
 describe("TeamManager", () => {
+  beforeEach(async () => {
+    process.env.PI_TEAMS_ROOT = TEST_ROOT;
+    await mkdir(TEST_ROOT, { recursive: true });
+  });
+
+  afterEach(async () => {
+    delete process.env.PI_TEAMS_ROOT;
+    await rm(TEST_ROOT, { recursive: true, force: true });
+  });
+
   it("starts one standing child process per configured code agent", async () => {
     const spawn = createControlledSpawnStub();
     const manager = new TeamManager({
@@ -190,6 +210,9 @@ describe("TeamManager", () => {
     expect(lifecycleSink.addEvent).toHaveBeenCalledWith(
       "Started 2 standing code agents",
     );
+    expect(existsSync(teamMailboxInboxPath("alpha", "leader"))).toBe(true);
+    expect(existsSync(teamMailboxInboxPath("alpha", "code-1"))).toBe(true);
+    expect(existsSync(teamMailboxInboxPath("alpha", "code-2"))).toBe(true);
   });
 
   it("falls back to the leader snapshot model, thinking level, and full tools", async () => {
@@ -330,6 +353,127 @@ describe("TeamManager", () => {
     );
   });
 
+  it("queues send and steer messages to active agent mailboxes", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code" }],
+      }),
+    });
+
+    await manager.sendMessage("code-1", "focus on tests");
+    await manager.steerMessage("code-1", "switch to lint failures");
+
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "code-1")),
+    ).resolves.toMatchObject([
+      {
+        sender: "leader",
+        receiver: "code-1",
+        subject: "send",
+        message: "focus on tests",
+      },
+      {
+        sender: "leader",
+        receiver: "code-1",
+        subject: "steer",
+        message: "switch to lint failures",
+      },
+    ]);
+  });
+
+  it("routes directed messages to active sub-agent mailboxes when they exist", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code" }],
+      }),
+    });
+    await ensureTeamMailbox("alpha", "review-1");
+
+    await manager.sendMessage("review-1", "check the failing test");
+
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "review-1")),
+    ).resolves.toMatchObject([
+      {
+        sender: "leader",
+        receiver: "review-1",
+        subject: "send",
+        message: "check the failing test",
+      },
+    ]);
+  });
+
+  it("broadcasts queued messages to all standing code agents", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code", count: 2 }],
+      }),
+    });
+
+    const result = await manager.broadcastMessage("all hands on deck", "code");
+
+    expect(result).toEqual({
+      teamName: "alpha",
+      agentType: "code",
+      ignored: false,
+      targetNames: ["code-1", "code-2"],
+    });
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "code-1")),
+    ).resolves.toMatchObject([
+      {
+        sender: "leader",
+        receiver: "code-1",
+        subject: "broadcast",
+        message: "all hands on deck",
+      },
+    ]);
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "code-2")),
+    ).resolves.toMatchObject([
+      {
+        sender: "leader",
+        receiver: "code-2",
+        subject: "broadcast",
+        message: "all hands on deck",
+      },
+    ]);
+  });
+
+  it("rejects invalid broadcast target types", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code" }],
+      }),
+    });
+
+    await expect(
+      manager.broadcastMessage("nope", "review"),
+    ).rejects.toMatchObject({
+      code: "invalid-broadcast-type",
+    });
+  });
+
   it("stops standing code agents with SIGTERM and clears the active team", async () => {
     const spawn = createControlledSpawnStub();
     const manager = new TeamManager({
@@ -357,6 +501,43 @@ describe("TeamManager", () => {
     expect(manager.isActive()).toBe(false);
     expect(lifecycleSink.setTeamStatus).toHaveBeenNthCalledWith(2, "Stopping");
     expect(lifecycleSink.setTeamStatus).toHaveBeenNthCalledWith(3, "Stopped");
+  });
+
+  it("ignores new operator messages while the team is stopping", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code" }],
+      }),
+    });
+
+    const [runtime] = spawn.runtimes;
+    if (runtime === undefined) {
+      throw new Error("Expected one runtime");
+    }
+
+    runtime.kill.mockImplementationOnce(() => true);
+    const stopPromise = manager.stopActiveTeam();
+
+    const sendResult = await manager.sendMessage("code-1", "ignored");
+    expect(sendResult.ignored).toBe(true);
+
+    runtime.resolve(
+      createExit(runtime.options, {
+        signal: "SIGTERM",
+        expectedExit: true,
+        crashed: false,
+      }),
+    );
+    await stopPromise;
+
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "code-1")),
+    ).resolves.toEqual([]);
   });
 
   it("rolls back already-started children when startup fails partway through", async () => {

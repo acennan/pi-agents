@@ -21,6 +21,12 @@ import { teamDir } from "../storage/team-home.ts";
 
 export const LEADER_MAILBOX_OWNER = "leader";
 export const DEFAULT_TEAM_MAILBOX_POLL_SECS = 5;
+export const TEAM_MAILBOX_SUBJECT_SEND = "send";
+export const TEAM_MAILBOX_SUBJECT_QUEUED_WORK = "queued-work";
+export const TEAM_MAILBOX_SUBJECT_STEER = "steer";
+export const TEAM_MAILBOX_SUBJECT_BROADCAST = "broadcast";
+
+export type MailboxEntryDelivery = "follow-up" | "steer" | "ignored";
 
 export type MailboxEntry = {
   timestamp: string;
@@ -132,6 +138,21 @@ export function leaderInboxPath(teamName: string): string {
 
 export function leaderCursorPath(teamName: string): string {
   return teamMailboxCursorPath(teamName, LEADER_MAILBOX_OWNER);
+}
+
+export function classifyMailboxEntryDelivery(
+  subject: string,
+): MailboxEntryDelivery {
+  switch (subject) {
+    case TEAM_MAILBOX_SUBJECT_SEND:
+    case TEAM_MAILBOX_SUBJECT_QUEUED_WORK:
+    case TEAM_MAILBOX_SUBJECT_BROADCAST:
+      return "follow-up";
+    case TEAM_MAILBOX_SUBJECT_STEER:
+      return "steer";
+    default:
+      return "ignored";
+  }
 }
 
 export function getMailboxPollIntervalSecs(
@@ -322,7 +343,10 @@ export async function consumeMailboxEntries(
 }
 
 async function processMailboxUnderLock(
-  options: Pick<ConsumeMailboxOptions, "inboxPath" | "cursorPath" | "handleEntry">,
+  options: Pick<
+    ConsumeMailboxOptions,
+    "inboxPath" | "cursorPath" | "handleEntry"
+  >,
 ): Promise<ConsumeMailboxResult> {
   await ensureMailboxFiles(options.inboxPath, options.cursorPath);
 

@@ -6,6 +6,15 @@
  * ensures one active team per leader session.
  */
 
+import { existsSync } from "node:fs";
+import {
+  appendTeamMailboxEntry,
+  ensureTeamMailbox,
+  TEAM_MAILBOX_SUBJECT_BROADCAST,
+  TEAM_MAILBOX_SUBJECT_SEND,
+  TEAM_MAILBOX_SUBJECT_STEER,
+  teamMailboxInboxPath,
+} from "../agents/mailbox.ts";
 import { validateTeamConfigValue } from "../config/loader.ts";
 import {
   expandTeamConfig,
@@ -83,6 +92,20 @@ export type StopTeamResult = {
   crashedAgentCount: number;
 };
 
+export type QueueAgentMessageResult = {
+  teamName: string;
+  agentName: string;
+  ignored: boolean;
+  subject: string;
+};
+
+export type BroadcastMessageResult = {
+  teamName: string;
+  agentType: "code";
+  ignored: boolean;
+  targetNames: string[];
+};
+
 export type TeamManagerDeps = {
   spawnChildRuntime?: (
     options: SpawnChildRuntimeOptions,
@@ -91,7 +114,11 @@ export type TeamManagerDeps = {
 };
 
 export class TeamManagerError extends Error {
-  readonly code: "team-active";
+  readonly code:
+    | "invalid-broadcast-type"
+    | "no-active-team"
+    | "team-active"
+    | "unknown-agent";
 
   constructor(
     code: TeamManagerError["code"],
@@ -164,7 +191,10 @@ export class TeamManager {
     sink.setTeamStatus?.("Active");
 
     try {
+      await ensureTeamMailbox(params.snapshot.name, "leader");
+
       for (const definition of codeAgentDefinitions) {
+        await ensureTeamMailbox(params.snapshot.name, definition.name);
         const runtime = this.#spawnChildRuntime({
           role: "code",
           teamName: params.snapshot.name,
@@ -257,6 +287,69 @@ export class TeamManager {
     };
   }
 
+  async sendMessage(
+    agentName: string,
+    message: string,
+  ): Promise<QueueAgentMessageResult> {
+    return this.#queueAgentMessage(
+      agentName,
+      message,
+      TEAM_MAILBOX_SUBJECT_SEND,
+    );
+  }
+
+  async steerMessage(
+    agentName: string,
+    message: string,
+  ): Promise<QueueAgentMessageResult> {
+    return this.#queueAgentMessage(
+      agentName,
+      message,
+      TEAM_MAILBOX_SUBJECT_STEER,
+    );
+  }
+
+  async broadcastMessage(
+    message: string,
+    agentType?: string,
+  ): Promise<BroadcastMessageResult> {
+    const activeTeam = this.#requireActiveTeam();
+
+    if (agentType !== undefined && agentType !== "code") {
+      throw new TeamManagerError(
+        "invalid-broadcast-type",
+        `Unsupported broadcast target type "${agentType}". Only "code" is allowed.`,
+      );
+    }
+
+    const targetNames = [...activeTeam.codeAgents.keys()];
+    if (activeTeam.stopping) {
+      return {
+        teamName: activeTeam.snapshot.name,
+        agentType: "code",
+        ignored: true,
+        targetNames,
+      };
+    }
+
+    await Promise.all(
+      targetNames.map((targetName) =>
+        appendTeamMailboxEntry(activeTeam.snapshot.name, targetName, {
+          sender: "leader",
+          subject: TEAM_MAILBOX_SUBJECT_BROADCAST,
+          message,
+        }),
+      ),
+    );
+
+    return {
+      teamName: activeTeam.snapshot.name,
+      agentType: "code",
+      ignored: false,
+      targetNames,
+    };
+  }
+
   #trackCodeAgentCompletion(
     activeTeam: ActiveTeamRuntime,
     agentName: string,
@@ -302,6 +395,66 @@ export class TeamManager {
         record.runtime.child.kill("SIGTERM");
         await record.runtime.completion;
       }),
+    );
+  }
+
+  async #queueAgentMessage(
+    agentName: string,
+    message: string,
+    subject: string,
+  ): Promise<QueueAgentMessageResult> {
+    const activeTeam = this.#requireActiveTeam();
+    this.#requireMailboxTarget(activeTeam, agentName);
+
+    if (activeTeam.stopping) {
+      return {
+        teamName: activeTeam.snapshot.name,
+        agentName,
+        ignored: true,
+        subject,
+      };
+    }
+
+    await appendTeamMailboxEntry(activeTeam.snapshot.name, agentName, {
+      sender: "leader",
+      subject,
+      message,
+    });
+
+    return {
+      teamName: activeTeam.snapshot.name,
+      agentName,
+      ignored: false,
+      subject,
+    };
+  }
+
+  #requireActiveTeam(): ActiveTeamRuntime {
+    const activeTeam = this.#activeTeam;
+    if (activeTeam !== undefined) {
+      return activeTeam;
+    }
+
+    throw new TeamManagerError(
+      "no-active-team",
+      "No team is currently active.",
+    );
+  }
+
+  #requireMailboxTarget(
+    activeTeam: ActiveTeamRuntime,
+    agentName: string,
+  ): void {
+    if (
+      activeTeam.codeAgents.has(agentName) ||
+      existsSync(teamMailboxInboxPath(activeTeam.snapshot.name, agentName))
+    ) {
+      return;
+    }
+
+    throw new TeamManagerError(
+      "unknown-agent",
+      `Agent "${agentName}" is not active in team "${activeTeam.snapshot.name}".`,
     );
   }
 }
