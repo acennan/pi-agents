@@ -134,6 +134,22 @@ const defaultCreateSession: SessionFactory = async (options) => {
   return { session };
 };
 
+type ParsedRuntimeFlags = Partial<Record<RuntimeFlagName, string | string[]>>;
+
+type RuntimeFlagName =
+  | "--role"
+  | "--team"
+  | "--agent"
+  | "--workspace"
+  | "--cwd"
+  | "--task"
+  | "--model"
+  | "--thinking"
+  | "--tools"
+  | "--env";
+
+const MULTI_VALUE_RUNTIME_FLAGS = new Set<RuntimeFlagName>(["--env"]);
+
 /**
  * Parse the CLI arguments passed by the leader into a validated child-runtime
  * configuration.
@@ -141,101 +157,102 @@ const defaultCreateSession: SessionFactory = async (options) => {
 export function parseTeamChildRuntimeArgs(
   argv: readonly string[],
 ): TeamChildRuntimeArgs {
-  let role: string | undefined;
-  let teamName: string | undefined;
-  let agentName: string | undefined;
-  let workspacePath: string | undefined;
-  let cwd: string | undefined;
-  let taskId: string | undefined;
-  let modelReference: string | undefined;
-  let thinkingLevel: string | undefined;
-  let toolsCsv: string | undefined;
-  const env: Record<string, string> = {};
+  return validateAndBuildArgs(parseArgvFlags(argv));
+}
 
-  for (let index = 0; index < argv.length; index++) {
-    const arg = argv[index];
-    if (arg === undefined) {
+function parseArgvFlags(argv: readonly string[]): ParsedRuntimeFlags {
+  const flags: ParsedRuntimeFlags = {};
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const flagName = argv[index] as RuntimeFlagName | undefined;
+    if (flagName === undefined) {
       continue;
     }
 
-    switch (arg) {
-      case "--role":
-        role = readFlagValue(argv, ++index, arg);
-        break;
-      case "--team":
-        teamName = readFlagValue(argv, ++index, arg);
-        break;
-      case "--agent":
-        agentName = readFlagValue(argv, ++index, arg);
-        break;
-      case "--workspace":
-        workspacePath = readFlagValue(argv, ++index, arg);
-        break;
-      case "--cwd":
-        cwd = readFlagValue(argv, ++index, arg);
-        break;
-      case "--task":
-        taskId = readFlagValue(argv, ++index, arg);
-        break;
-      case "--model":
-        modelReference = readFlagValue(argv, ++index, arg);
-        break;
-      case "--thinking":
-        thinkingLevel = readFlagValue(argv, ++index, arg);
-        break;
-      case "--tools":
-        toolsCsv = readFlagValue(argv, ++index, arg);
-        break;
-      case "--env": {
-        const entry = readFlagValue(argv, ++index, arg);
-        const equalsIndex = entry.indexOf("=");
-        if (equalsIndex <= 0) {
-          throw new TeamChildRuntimeError(
-            "invalid-arg",
-            `Invalid --env value "${entry}". Expected KEY=value`,
-          );
-        }
-
-        const key = entry.slice(0, equalsIndex);
-        const value = entry.slice(equalsIndex + 1);
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-          throw new TeamChildRuntimeError(
-            "invalid-arg",
-            `Invalid environment variable name "${key}"`,
-          );
-        }
-        env[key] = value;
-        break;
-      }
-      default:
-        throw new TeamChildRuntimeError(
-          "invalid-arg",
-          `Unknown runtime argument "${arg}"`,
-        );
+    if (!isRuntimeFlagName(flagName)) {
+      throw new TeamChildRuntimeError(
+        "invalid-arg",
+        `Unknown runtime argument "${flagName}"`,
+      );
     }
+
+    const value = readFlagValue(argv, index + 1, flagName);
+    index += 1;
+
+    if (MULTI_VALUE_RUNTIME_FLAGS.has(flagName)) {
+      const entries = flags[flagName];
+      flags[flagName] = [...(Array.isArray(entries) ? entries : []), value];
+      continue;
+    }
+
+    flags[flagName] = value;
   }
 
-  const resolvedWorkspacePath = resolve(
-    requireRuntimeArg(workspacePath, "--workspace"),
-  );
-  const resolvedCwd = resolve(cwd ?? resolvedWorkspacePath);
+  return flags;
+}
+
+function validateAndBuildArgs(flags: ParsedRuntimeFlags): TeamChildRuntimeArgs {
+  const workspacePath = resolve(readSingleFlag(flags, "--workspace"));
+  const taskId = readOptionalSingleFlag(flags, "--task");
 
   return {
-    role: parseMemberRole(requireRuntimeArg(role, "--role")),
-    teamName: requireNonEmptyValue(teamName, "--team"),
-    agentName: requireNonEmptyValue(agentName, "--agent"),
-    workspacePath: resolvedWorkspacePath,
-    cwd: resolvedCwd,
+    role: parseMemberRole(readSingleFlag(flags, "--role")),
+    teamName: requireNonEmptyValue(readSingleFlag(flags, "--team"), "--team"),
+    agentName: requireNonEmptyValue(
+      readSingleFlag(flags, "--agent"),
+      "--agent",
+    ),
+    workspacePath,
+    cwd: resolve(readOptionalSingleFlag(flags, "--cwd") ?? workspacePath),
     taskId: taskId ? requireNonEmptyValue(taskId, "--task") : undefined,
-    modelReference: validateModelReference(
-      requireRuntimeArg(modelReference, "--model"),
-    ),
-    thinkingLevel: parseThinkingLevel(
-      requireRuntimeArg(thinkingLevel, "--thinking"),
-    ),
-    tools: parseToolNames(requireRuntimeArg(toolsCsv, "--tools")),
-    env,
+    modelReference: validateModelReference(readSingleFlag(flags, "--model")),
+    thinkingLevel: parseThinkingLevel(readSingleFlag(flags, "--thinking")),
+    tools: parseToolNames(readSingleFlag(flags, "--tools")),
+    env: parseEnvEntries(flags["--env"]),
   };
+}
+
+function parseEnvEntries(
+  entries: string | string[] | undefined,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const equalsIndex = entry.indexOf("=");
+    if (equalsIndex <= 0) {
+      throw new TeamChildRuntimeError(
+        "invalid-arg",
+        `Invalid --env value "${entry}". Expected KEY=value`,
+      );
+    }
+
+    const key = entry.slice(0, equalsIndex);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      throw new TeamChildRuntimeError(
+        "invalid-arg",
+        `Invalid environment variable name "${key}"`,
+      );
+    }
+
+    env[key] = entry.slice(equalsIndex + 1);
+  }
+
+  return env;
+}
+
+function isRuntimeFlagName(value: string): value is RuntimeFlagName {
+  return (
+    value === "--role" ||
+    value === "--team" ||
+    value === "--agent" ||
+    value === "--workspace" ||
+    value === "--cwd" ||
+    value === "--task" ||
+    value === "--model" ||
+    value === "--thinking" ||
+    value === "--tools" ||
+    value === "--env"
+  );
 }
 
 /** Create concrete Pi tool instances for the provided tool names. */
@@ -373,6 +390,27 @@ function readFlagValue(
     throw new TeamChildRuntimeError(
       "missing-arg",
       `Missing value for runtime argument ${flagName}`,
+    );
+  }
+  return value;
+}
+
+function readSingleFlag(
+  flags: ParsedRuntimeFlags,
+  flagName: Exclude<RuntimeFlagName, "--env">,
+): string {
+  return requireRuntimeArg(readOptionalSingleFlag(flags, flagName), flagName);
+}
+
+function readOptionalSingleFlag(
+  flags: ParsedRuntimeFlags,
+  flagName: Exclude<RuntimeFlagName, "--env">,
+): string | undefined {
+  const value = flags[flagName];
+  if (Array.isArray(value)) {
+    throw new TeamChildRuntimeError(
+      "invalid-arg",
+      `Runtime argument ${flagName} does not support repeated values`,
     );
   }
   return value;
