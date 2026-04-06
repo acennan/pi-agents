@@ -200,54 +200,90 @@ export function splitCommandArgs(rawArgs: string): string[] {
   return tokens;
 }
 
-export function parseCreateCommandArgs(
-  rawArgs: string,
-): ParsedCreateCommandArgs {
-  const tokens = splitCommandArgs(rawArgs);
+type ParsedFlagEntry = {
+  name: string;
+  value?: string;
+};
+
+type ParsedKeyValueFlags = {
+  tokens: string[];
+  positionals: string[];
+  entries: ParsedFlagEntry[];
+};
+
+function parseKeyValueFlags(args: string[]): ParsedKeyValueFlags {
+  const positionals: string[] = [];
+  const entries: ParsedFlagEntry[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === undefined) {
+      continue;
+    }
+
+    if (!token.startsWith("--")) {
+      positionals.push(token);
+      continue;
+    }
+
+    const next = args[index + 1];
+    if (next === undefined || next.startsWith("--")) {
+      entries.push({ name: token });
+      continue;
+    }
+
+    entries.push({ name: token, value: next });
+    index += 1;
+  }
+
+  return {
+    tokens: [...args],
+    positionals,
+    entries,
+  };
+}
+
+function buildCreateArgs(flags: ParsedKeyValueFlags): ParsedCreateCommandArgs {
+  if (flags.positionals.length > 0) {
+    throw new Error(`Unknown /team create option: ${flags.positionals[0]}`);
+  }
+
   const result: ParsedCreateCommandArgs = { name: "" };
 
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    const next = tokens[index + 1];
-
-    switch (token) {
+  for (const entry of flags.entries) {
+    switch (entry.name) {
       case "--name":
-        if (next === undefined || next.startsWith("--")) {
+        if (entry.value === undefined) {
           throw new Error("/team create requires a value after --name");
         }
-        result.name = next;
-        index += 1;
+        result.name = entry.value;
         break;
       case "--config":
-        if (next === undefined || next.startsWith("--")) {
+        if (entry.value === undefined) {
           throw new Error("/team create requires a value after --config");
         }
-        result.configPath = next;
-        index += 1;
+        result.configPath = entry.value;
         break;
       case "--worktree-dir":
-        if (next === undefined || next.startsWith("--")) {
+        if (entry.value === undefined) {
           throw new Error("/team create requires a value after --worktree-dir");
         }
-        result.worktreeDir = next;
-        index += 1;
+        result.worktreeDir = entry.value;
         break;
       case "--model":
-        if (next === undefined || next.startsWith("--")) {
+        if (entry.value === undefined) {
           throw new Error("/team create requires a value after --model");
         }
-        result.model = next;
-        index += 1;
+        result.model = entry.value;
         break;
       case "--thinking":
-        if (next === undefined || next.startsWith("--")) {
+        if (entry.value === undefined) {
           throw new Error("/team create requires a value after --thinking");
         }
-        result.thinkingLevel = next;
-        index += 1;
+        result.thinkingLevel = entry.value;
         break;
       default:
-        throw new Error(`Unknown /team create option: ${token}`);
+        throw new Error(`Unknown /team create option: ${entry.name}`);
     }
   }
 
@@ -258,21 +294,30 @@ export function parseCreateCommandArgs(
   return result;
 }
 
-export function parseRestartCommandArgs(
-  rawArgs: string,
-): ParsedRestartCommandArgs {
-  const tokens = splitCommandArgs(rawArgs);
-  const [teamName] = tokens;
+function buildRestartArgs(flags: ParsedKeyValueFlags): ParsedRestartCommandArgs {
+  const [teamName] = flags.tokens;
 
   if (teamName === undefined || teamName.trim().length === 0) {
     throw new Error("/team restart requires <team-name>");
   }
 
-  if (tokens.length > 1) {
+  if (flags.tokens.length > 1) {
     throw new Error("/team restart accepts exactly one <team-name>");
   }
 
   return { teamName };
+}
+
+export function parseCreateCommandArgs(
+  rawArgs: string,
+): ParsedCreateCommandArgs {
+  return buildCreateArgs(parseKeyValueFlags(splitCommandArgs(rawArgs)));
+}
+
+export function parseRestartCommandArgs(
+  rawArgs: string,
+): ParsedRestartCommandArgs {
+  return buildRestartArgs(parseKeyValueFlags(splitCommandArgs(rawArgs)));
 }
 
 export class TeamModeEditor extends CustomEditor {
