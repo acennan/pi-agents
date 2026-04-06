@@ -13,10 +13,11 @@
     "format": "bun biome format --write ./extensions",
     "lint": "bun biome lint --write ./extensions",
     "check": "bun biome check --write ./extensions",
-    "fallow": "fallow",
-    "test": "vitest",
-    "test:run": "vitest run",
-    "test:coverage": "vitest --coverage",
+    "dead-code": "fallow dead-code",
+    "duplication": "fallow dupes",
+    "health": "fallow health",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest --watch"
   },
   "repository": {
@@ -33,6 +34,7 @@
     "@biomejs/biome": "2.4.10",
     "@types/bun": "^1.3.11",
     "@types/proper-lockfile": "^4.1.4",
+    "@vitest/coverage-v8": "4.1.0",
     "fallow": "^2.11.0",
     "globals": "^17.4.0",
     "typescript": "^5.9.3",

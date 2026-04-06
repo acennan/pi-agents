@@ -5,9 +5,7 @@ node_modules/
 .beads/*
 !.beads/issues.jsonl
 .claude/
+coverage/
 *.d.ts
 *.d.ts.map
 *.js.map
-
-# bv (beads viewer) local config and caches
-.bv/
