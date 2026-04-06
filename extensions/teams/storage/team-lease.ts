@@ -135,37 +135,46 @@ export async function claimRuntimeLock(
       return "claimed";
     }
 
-    const existingState = (await isRuntimeLockActive(
-      existingRecord,
-      options.processAlive,
-    ))
-      ? "active"
-      : "stale";
-
-    if (
-      existingRecord.sessionId === record.sessionId &&
-      existingRecord.pid === record.pid
-    ) {
-      return existingState === "active" ? "already-owned" : "recovered-stale";
-    }
-
-    if (existingState === "active") {
-      throw new TeamLeaseError(
-        "lease-active",
-        `Team "${teamName}" is already controlled by session "${existingRecord.sessionId}" (pid ${existingRecord.pid})`,
-      );
-    }
-
-    if (!options.allowStaleRecovery) {
-      throw new TeamLeaseError(
-        "lease-stale",
-        `Team "${teamName}" has a stale runtime lock from session "${existingRecord.sessionId}" (pid ${existingRecord.pid}). Only restart/delete recovery may clear it.`,
-      );
-    }
-
-    await writeRuntimeLockToPath(path, record);
-    return "recovered-stale";
+    return handleExistingLock(existingRecord, teamName, record, options);
   });
+}
+
+async function handleExistingLock(
+  existingRecord: RuntimeLockRecord,
+  teamName: string,
+  record: RuntimeLockRecord,
+  options: ClaimRuntimeLockOptions,
+): Promise<ClaimRuntimeLockResult> {
+  const existingState = (await isRuntimeLockActive(
+    existingRecord,
+    options.processAlive,
+  ))
+    ? "active"
+    : "stale";
+
+  if (
+    existingRecord.sessionId === record.sessionId &&
+    existingRecord.pid === record.pid
+  ) {
+    return existingState === "active" ? "already-owned" : "recovered-stale";
+  }
+
+  if (existingState === "active") {
+    throw new TeamLeaseError(
+      "lease-active",
+      `Team "${teamName}" is already controlled by session "${existingRecord.sessionId}" (pid ${existingRecord.pid})`,
+    );
+  }
+
+  if (!options.allowStaleRecovery) {
+    throw new TeamLeaseError(
+      "lease-stale",
+      `Team "${teamName}" has a stale runtime lock from session "${existingRecord.sessionId}" (pid ${existingRecord.pid}). Only restart/delete recovery may clear it.`,
+    );
+  }
+
+  await writeRuntimeLockToPath(runtimeLockPath(teamName), record);
+  return "recovered-stale";
 }
 
 export async function clearStaleRuntimeLock(
