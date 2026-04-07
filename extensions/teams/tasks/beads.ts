@@ -4,6 +4,14 @@
  * TF-04 validates that `br` is available before team startup.
  * TF-16 adds the code-agent task selection and atomic claim flow on top of the
  * same runner abstraction so later slices can reuse a single, normalized API.
+ * TF-16A adds supported remedial-task creation using beads parent-child links
+ * without relying on custom metadata.
+ *
+ * Real beads workspaces currently key dependencies by `(issue_id, depends_on_id)`,
+ * so the same task pair cannot simultaneously carry both `parent-child` and
+ * `discovered-from`. Teams therefore use the parent-child link as the
+ * authoritative remedial/source-task relationship and keep workflow lineage in
+ * team-owned state.
  */
 
 import { execFile as execFileCallback } from "node:child_process";
@@ -20,6 +28,8 @@ export type CommandRunner = (
 
 export const BEADS_TASK_STATUS_OPEN = "open";
 export const BEADS_TASK_STATUS_IN_PROGRESS = "in_progress";
+export const BEADS_DEPENDENCY_TYPE_DISCOVERED_FROM = "discovered-from";
+export const BEADS_DEPENDENCY_TYPE_PARENT_CHILD = "parent-child";
 
 export type BeadsTaskDependency = {
   id: string;
@@ -37,6 +47,7 @@ export type BeadsTask = {
   description?: string;
   issueType?: string;
   assignee?: string;
+  parentTaskId?: string;
   labels: string[];
   dependencies: BeadsTaskDependency[];
 };
@@ -50,6 +61,37 @@ export type UpdateBeadsTaskOptions = BeadsCommandOptions & {
   env?: NodeJS.ProcessEnv;
   status?: string;
   claim?: boolean;
+};
+
+export type CreateBeadsTaskOptions = BeadsCommandOptions & {
+  actor?: string;
+  env?: NodeJS.ProcessEnv;
+  title: string;
+  description?: string;
+  priority?: number;
+  issueType?: string;
+  assignee?: string;
+  labels?: readonly string[];
+  parentTaskId?: string;
+};
+
+export type AddBeadsDependencyOptions = BeadsCommandOptions & {
+  dependencyType?: string;
+};
+
+export type AddBeadsDependencyResult = {
+  status: string;
+  issueId: string;
+  dependsOnId: string;
+  dependencyType: string;
+  action: string;
+};
+
+export type CreateRemedialBeadsTaskOptions = Omit<
+  CreateBeadsTaskOptions,
+  "parentTaskId"
+> & {
+  originalTaskId: string;
 };
 
 export type ListClaimableBeadsTasksResult = {
@@ -238,6 +280,103 @@ export async function updateBeadsTask(
   );
 }
 
+export async function createBeadsTask(
+  workspacePath: string,
+  options: CreateBeadsTaskOptions,
+): Promise<BeadsTask> {
+  const args = [
+    "create",
+    "--actor",
+    resolveBeadsActor(options.actor, options.env),
+    options.title,
+  ];
+
+  if (options.priority !== undefined) {
+    args.push("--priority", String(options.priority));
+  }
+
+  if (options.issueType !== undefined) {
+    args.push("--type", options.issueType);
+  }
+
+  if (options.assignee !== undefined) {
+    args.push("--assignee", options.assignee);
+  }
+
+  if (options.labels !== undefined && options.labels.length > 0) {
+    args.push("--labels", options.labels.join(","));
+  }
+
+  if (options.parentTaskId !== undefined) {
+    args.push("--parent", options.parentTaskId);
+  }
+
+  if (options.description !== undefined) {
+    args.push("--description", options.description);
+  }
+
+  const payload = await runBeadsJsonCommand(workspacePath, args, options);
+  const taskId = extractCreatedBeadsTaskId(payload, formatBrCommand(args));
+
+  return getBeadsTask(workspacePath, taskId, options);
+}
+
+export async function addBeadsDependency(
+  workspacePath: string,
+  taskId: string,
+  dependsOnTaskId: string,
+  options: AddBeadsDependencyOptions = {},
+): Promise<AddBeadsDependencyResult> {
+  const dependencyType =
+    options.dependencyType ?? BEADS_DEPENDENCY_TYPE_DISCOVERED_FROM;
+
+  const payload = await runBeadsJsonCommand(
+    workspacePath,
+    ["dep", "add", taskId, dependsOnTaskId, "--type", dependencyType],
+    options,
+  );
+
+  return normalizeAddBeadsDependencyResult(
+    payload,
+    formatBrCommand([
+      "dep",
+      "add",
+      taskId,
+      dependsOnTaskId,
+      "--type",
+      dependencyType,
+      "--json",
+    ]),
+  );
+}
+
+export async function createRemedialBeadsTask(
+  workspacePath: string,
+  options: CreateRemedialBeadsTaskOptions,
+): Promise<BeadsTask> {
+  const task = await createBeadsTask(workspacePath, {
+    runner: options.runner,
+    actor: options.actor,
+    env: options.env,
+    title: options.title,
+    description: options.description,
+    priority: options.priority,
+    issueType: options.issueType,
+    assignee: options.assignee,
+    labels: options.labels,
+    parentTaskId: options.originalTaskId,
+  });
+
+  if (task.parentTaskId !== options.originalTaskId) {
+    throw new BeadsAdapterError(
+      "invalid-response",
+      `Expected remedial beads task "${task.id}" to have parent "${options.originalTaskId}"`,
+    );
+  }
+
+  return task;
+}
+
 export async function listClaimableBeadsTasks(
   workspacePath: string,
   options: BeadsCommandOptions = {},
@@ -410,6 +549,7 @@ function normalizeBeadsTask(value: unknown, path: string): BeadsTask {
     description: readOptionalString(value, "description", path),
     issueType: readOptionalString(value, "issue_type", path),
     assignee: readOptionalString(value, "assignee", path),
+    parentTaskId: readOptionalString(value, "parent", path),
     labels: readOptionalStringArray(value, "labels", path),
     dependencies: readOptionalDependencyArray(value, "dependencies", path),
   };
@@ -550,6 +690,53 @@ function readOptionalNumber(
   }
 
   return value;
+}
+
+function extractCreatedBeadsTaskId(value: unknown, command: string): string {
+  if (Array.isArray(value)) {
+    const [task] = value;
+    if (task !== undefined) {
+      return extractCreatedBeadsTaskId(task, `${command} response[0]`);
+    }
+
+    throw new BeadsAdapterError(
+      "invalid-response",
+      `Expected ${command} to return at least one created task`,
+    );
+  }
+
+  if (!isJsonRecord(value)) {
+    throw new BeadsAdapterError(
+      "invalid-response",
+      `Expected ${command} to return a JSON object or array`,
+    );
+  }
+
+  return readRequiredString(value, "id", `${command} response`);
+}
+
+function normalizeAddBeadsDependencyResult(
+  value: unknown,
+  command: string,
+): AddBeadsDependencyResult {
+  if (!isJsonRecord(value)) {
+    throw new BeadsAdapterError(
+      "invalid-response",
+      `Expected ${command} to return an object`,
+    );
+  }
+
+  return {
+    status: readRequiredString(value, "status", `${command} response`),
+    issueId: readRequiredString(value, "issue_id", `${command} response`),
+    dependsOnId: readRequiredString(
+      value,
+      "depends_on_id",
+      `${command} response`,
+    ),
+    dependencyType: readRequiredString(value, "type", `${command} response`),
+    action: readRequiredString(value, "action", `${command} response`),
+  };
 }
 
 function isJsonRecord(value: unknown): value is JsonRecord {

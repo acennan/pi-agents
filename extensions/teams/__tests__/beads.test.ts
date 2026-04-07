@@ -5,9 +5,12 @@ import {
   type BeadsTask,
   type CommandRunner,
   claimNextReadyBeadsTask,
+  createBeadsTask,
+  createRemedialBeadsTask,
   getBeadsTask,
   listClaimableBeadsTasks,
   updateBeadsTask,
+  validateBeadsWorkspace,
 } from "../tasks/beads.ts";
 
 const WORKSPACE_PATH = "/tmp/team-workspace";
@@ -29,6 +32,7 @@ function makeTask(
     description: overrides.description,
     issueType: overrides.issueType,
     assignee: overrides.assignee,
+    parentTaskId: overrides.parentTaskId,
     labels: overrides.labels ?? [],
     dependencies: overrides.dependencies ?? [],
   };
@@ -40,6 +44,27 @@ function jsonResponse(payload: unknown): { stdout: string; stderr: string } {
     stderr: "",
   };
 }
+
+describe("validateBeadsWorkspace", () => {
+  it("checks beads availability with br ready --json", async () => {
+    const calls: RunnerCall[] = [];
+    const runner: CommandRunner = async (command, args, options) => {
+      calls.push({ command, args: [...args], cwd: options?.cwd });
+      return jsonResponse([]);
+    };
+
+    await expect(
+      validateBeadsWorkspace(WORKSPACE_PATH, { runner }),
+    ).resolves.toBeUndefined();
+    expect(calls).toEqual([
+      {
+        command: "br",
+        args: ["ready", "--json"],
+        cwd: WORKSPACE_PATH,
+      },
+    ]);
+  });
+});
 
 describe("listClaimableBeadsTasks", () => {
   it("keeps only ready open tasks that are not dependency-blocked", async () => {
@@ -126,6 +151,7 @@ describe("getBeadsTask/updateBeadsTask", () => {
       description: undefined,
       issueType: "task",
       assignee: undefined,
+      parentTaskId: undefined,
       labels: ["teams", "phase-4"],
       dependencies: [
         {
@@ -170,6 +196,216 @@ describe("getBeadsTask/updateBeadsTask", () => {
         "in_progress",
         "--json",
       ],
+    ]);
+  });
+});
+
+describe("createBeadsTask", () => {
+  it("re-reads the created task when beads returns raw create payloads", async () => {
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (_command, args) => {
+      calls.push([...args]);
+
+      switch (args.join(" ")) {
+        case "create --actor leader Implement pi-agents-20 --priority 1 --type task --labels teams,phase-4 --parent pi-agents-10 --description Implement change --json":
+          return jsonResponse({
+            id: "pi-agents-20",
+            title: "Implement pi-agents-20",
+            status: "open",
+            priority: 1,
+            description: "Implement change",
+            issue_type: "task",
+            labels: ["teams", "phase-4"],
+            dependencies: [
+              {
+                issue_id: "pi-agents-20",
+                depends_on_id: "pi-agents-10",
+                type: "parent-child",
+              },
+            ],
+          });
+        case "show pi-agents-20 --json":
+          return jsonResponse([
+            {
+              id: "pi-agents-20",
+              title: "Implement pi-agents-20",
+              status: "open",
+              priority: 1,
+              description: "Implement change",
+              issue_type: "task",
+              labels: ["teams", "phase-4"],
+              parent: "pi-agents-10",
+              dependencies: [
+                {
+                  id: "pi-agents-10",
+                  title: "Parent task",
+                  status: "closed",
+                  priority: 1,
+                  dependency_type: "parent-child",
+                },
+              ],
+            },
+          ]);
+        default:
+          throw new Error(`Unexpected command: ${args.join(" ")}`);
+      }
+    };
+
+    const task = await createBeadsTask(WORKSPACE_PATH, {
+      runner,
+      actor: "leader",
+      title: "Implement pi-agents-20",
+      description: "Implement change",
+      priority: 1,
+      issueType: "task",
+      labels: ["teams", "phase-4"],
+      parentTaskId: "pi-agents-10",
+    });
+
+    expect(task).toEqual(
+      makeTask({
+        id: "pi-agents-20",
+        title: "Implement pi-agents-20",
+        priority: 1,
+        description: "Implement change",
+        issueType: "task",
+        labels: ["teams", "phase-4"],
+        parentTaskId: "pi-agents-10",
+        dependencies: [
+          {
+            id: "pi-agents-10",
+            title: "Parent task",
+            status: "closed",
+            priority: 1,
+            dependencyType: "parent-child",
+          },
+        ],
+      }),
+    );
+    expect(calls).toEqual([
+      [
+        "create",
+        "--actor",
+        "leader",
+        "Implement pi-agents-20",
+        "--priority",
+        "1",
+        "--type",
+        "task",
+        "--labels",
+        "teams,phase-4",
+        "--parent",
+        "pi-agents-10",
+        "--description",
+        "Implement change",
+        "--json",
+      ],
+      ["show", "pi-agents-20", "--json"],
+    ]);
+  });
+});
+
+describe("createRemedialBeadsTask", () => {
+  it("creates remedial work using the parent-child link supported by beads", async () => {
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (_command, args) => {
+      calls.push([...args]);
+
+      switch (args.join(" ")) {
+        case "create --actor leader Review fixes for pi-agents-10 --priority 1 --type task --labels teams,remedial --parent pi-agents-10 --description Address review findings --json":
+          return jsonResponse({
+            id: "pi-agents-10.1",
+            title: "Review fixes for pi-agents-10",
+            status: "open",
+            priority: 1,
+            description: "Address review findings",
+            issue_type: "task",
+            labels: ["teams", "remedial"],
+            dependencies: [
+              {
+                issue_id: "pi-agents-10.1",
+                depends_on_id: "pi-agents-10",
+                type: "parent-child",
+              },
+            ],
+          });
+        case "show pi-agents-10.1 --json":
+          return jsonResponse([
+            {
+              id: "pi-agents-10.1",
+              title: "Review fixes for pi-agents-10",
+              status: "open",
+              priority: 1,
+              description: "Address review findings",
+              issue_type: "task",
+              labels: ["teams", "remedial"],
+              parent: "pi-agents-10",
+              dependencies: [
+                {
+                  id: "pi-agents-10",
+                  title: "Original task",
+                  status: "closed",
+                  priority: 1,
+                  dependency_type: "parent-child",
+                },
+              ],
+            },
+          ]);
+        default:
+          throw new Error(`Unexpected command: ${args.join(" ")}`);
+      }
+    };
+
+    const task = await createRemedialBeadsTask(WORKSPACE_PATH, {
+      runner,
+      actor: "leader",
+      originalTaskId: "pi-agents-10",
+      title: "Review fixes for pi-agents-10",
+      description: "Address review findings",
+      priority: 1,
+      issueType: "task",
+      labels: ["teams", "remedial"],
+    });
+
+    expect(task).toEqual(
+      makeTask({
+        id: "pi-agents-10.1",
+        title: "Review fixes for pi-agents-10",
+        priority: 1,
+        description: "Address review findings",
+        issueType: "task",
+        labels: ["teams", "remedial"],
+        parentTaskId: "pi-agents-10",
+        dependencies: [
+          {
+            id: "pi-agents-10",
+            title: "Original task",
+            status: "closed",
+            priority: 1,
+            dependencyType: "parent-child",
+          },
+        ],
+      }),
+    );
+    expect(calls).toEqual([
+      [
+        "create",
+        "--actor",
+        "leader",
+        "Review fixes for pi-agents-10",
+        "--priority",
+        "1",
+        "--type",
+        "task",
+        "--labels",
+        "teams,remedial",
+        "--parent",
+        "pi-agents-10",
+        "--description",
+        "Address review findings",
+        "--json",
+      ],
+      ["show", "pi-agents-10.1", "--json"],
     ]);
   });
 });
