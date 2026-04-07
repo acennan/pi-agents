@@ -311,9 +311,22 @@ async function handlePauseCommand(
   teamModeState: TeamModeState,
 ): Promise<string> {
   void ctx;
-  void teamManager;
-  void teamModeState;
-  return notImplementedMessage("pause", "TF-15");
+
+  if (!teamModeState.isActive()) {
+    return "No team is currently active.";
+  }
+
+  const result = await teamManager.pauseActiveTeam();
+
+  if (result.ignored) {
+    return `Ignoring /team pause because team "${result.teamName}" is stopping.`;
+  }
+
+  if (!result.changed) {
+    return `Team "${result.teamName}" is already paused.`;
+  }
+
+  return `Paused team "${result.teamName}". Active work will continue, but code agents will not claim new tasks until resumed.`;
 }
 
 async function handleResumeCommand(
@@ -322,9 +335,22 @@ async function handleResumeCommand(
   teamModeState: TeamModeState,
 ): Promise<string> {
   void ctx;
-  void teamManager;
-  void teamModeState;
-  return notImplementedMessage("resume", "TF-15");
+
+  if (!teamModeState.isActive()) {
+    return "No team is currently active.";
+  }
+
+  const result = await teamManager.resumeActiveTeam();
+
+  if (result.ignored) {
+    return `Ignoring /team resume because team "${result.teamName}" is stopping.`;
+  }
+
+  if (!result.changed) {
+    return `Team "${result.teamName}" is not paused.`;
+  }
+
+  return `Resumed task claiming for team "${result.teamName}".`;
 }
 
 async function handleRestartCommand(

@@ -15,6 +15,8 @@ import type {
 } from "../leader/process-manager.ts";
 import {
   type ManagedCodeAgent,
+  TEAM_CONTROL_MESSAGE_PAUSED,
+  TEAM_CONTROL_MESSAGE_RESUMED,
   type TeamLifecycleSink,
   TeamManager,
   TeamManagerError,
@@ -472,6 +474,228 @@ describe("TeamManager", () => {
     ).rejects.toMatchObject({
       code: "invalid-broadcast-type",
     });
+  });
+
+  it("pauses new task claiming without stopping active work", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+    const lifecycleSink = createLifecycleSink();
+
+    const startResult = await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code", count: 2 }],
+      }),
+      lifecycleSink,
+    });
+
+    expect(startResult.codeAgentCount).toBe(2);
+
+    const pauseResult = await manager.pauseActiveTeam();
+
+    expect(pauseResult).toEqual({
+      teamName: "alpha",
+      changed: true,
+      ignored: false,
+      targetNames: ["code-1", "code-2"],
+    });
+    expect(manager.getActiveTeam()).toMatchObject({
+      paused: true,
+    });
+    expect(
+      spawn.runtimes.every((runtime) => runtime.kill.mock.calls.length === 0),
+    ).toBe(true);
+    expect(lifecycleSink.setTeamStatus).toHaveBeenNthCalledWith(2, "Paused");
+    expect(lifecycleSink.addEvent).toHaveBeenCalledWith(
+      'Paused new task claiming for team "alpha"',
+    );
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "code-1")),
+    ).resolves.toMatchObject([
+      {
+        sender: "leader",
+        receiver: "code-1",
+        subject: "broadcast",
+        message: TEAM_CONTROL_MESSAGE_PAUSED,
+      },
+    ]);
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "code-2")),
+    ).resolves.toMatchObject([
+      {
+        sender: "leader",
+        receiver: "code-2",
+        subject: "broadcast",
+        message: TEAM_CONTROL_MESSAGE_PAUSED,
+      },
+    ]);
+  });
+
+  it("does nothing when pausing a team that is already paused", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+    const lifecycleSink = createLifecycleSink();
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code" }],
+      }),
+      lifecycleSink,
+    });
+
+    await manager.pauseActiveTeam();
+
+    await expect(manager.pauseActiveTeam()).resolves.toEqual({
+      teamName: "alpha",
+      changed: false,
+      ignored: false,
+      targetNames: ["code-1"],
+    });
+    expect(manager.getActiveTeam()).toMatchObject({
+      paused: true,
+    });
+    expect(lifecycleSink.setTeamStatus).toHaveBeenCalledTimes(2);
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "code-1")),
+    ).resolves.toMatchObject([
+      {
+        sender: "leader",
+        receiver: "code-1",
+        subject: "broadcast",
+        message: TEAM_CONTROL_MESSAGE_PAUSED,
+      },
+    ]);
+  });
+
+  it("continues delivering operator messages while paused", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code" }],
+      }),
+    });
+
+    await manager.pauseActiveTeam();
+
+    await expect(
+      manager.sendMessage("code-1", "stay on the current diff"),
+    ).resolves.toMatchObject({
+      ignored: false,
+      subject: "send",
+    });
+    await expect(
+      manager.broadcastMessage("status update", "code"),
+    ).resolves.toMatchObject({
+      ignored: false,
+      targetNames: ["code-1"],
+    });
+
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "code-1")),
+    ).resolves.toMatchObject([
+      {
+        sender: "leader",
+        receiver: "code-1",
+        subject: "broadcast",
+        message: TEAM_CONTROL_MESSAGE_PAUSED,
+      },
+      {
+        sender: "leader",
+        receiver: "code-1",
+        subject: "send",
+        message: "stay on the current diff",
+      },
+      {
+        sender: "leader",
+        receiver: "code-1",
+        subject: "broadcast",
+        message: "status update",
+      },
+    ]);
+  });
+
+  it("resumes task claiming after a pause", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+    const lifecycleSink = createLifecycleSink();
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code" }],
+      }),
+      lifecycleSink,
+    });
+
+    await manager.pauseActiveTeam();
+    const resumeResult = await manager.resumeActiveTeam();
+
+    expect(resumeResult).toEqual({
+      teamName: "alpha",
+      changed: true,
+      ignored: false,
+      targetNames: ["code-1"],
+    });
+    expect(manager.getActiveTeam()).toMatchObject({
+      paused: false,
+    });
+    expect(lifecycleSink.setTeamStatus).toHaveBeenNthCalledWith(3, "Active");
+    expect(lifecycleSink.addEvent).toHaveBeenCalledWith(
+      'Resumed task claiming for team "alpha"',
+    );
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "code-1")),
+    ).resolves.toMatchObject([
+      {
+        sender: "leader",
+        receiver: "code-1",
+        subject: "broadcast",
+        message: TEAM_CONTROL_MESSAGE_PAUSED,
+      },
+      {
+        sender: "leader",
+        receiver: "code-1",
+        subject: "broadcast",
+        message: TEAM_CONTROL_MESSAGE_RESUMED,
+      },
+    ]);
+  });
+
+  it("does nothing when resuming a team that is not paused", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+    const lifecycleSink = createLifecycleSink();
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code" }],
+      }),
+      lifecycleSink,
+    });
+
+    await expect(manager.resumeActiveTeam()).resolves.toEqual({
+      teamName: "alpha",
+      changed: false,
+      ignored: false,
+      targetNames: ["code-1"],
+    });
+    expect(manager.getActiveTeam()).toMatchObject({
+      paused: false,
+    });
+    expect(lifecycleSink.setTeamStatus).toHaveBeenCalledTimes(1);
+    await expect(
+      readMailboxEntries(teamMailboxInboxPath("alpha", "code-1")),
+    ).resolves.toEqual([]);
   });
 
   it("stops standing code agents with SIGTERM and clears the active team", async () => {

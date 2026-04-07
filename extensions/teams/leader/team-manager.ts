@@ -66,6 +66,7 @@ type ActiveTeamRuntime = {
   snapshot: TeamSnapshot;
   sink: TeamLifecycleSink;
   codeAgents: Map<string, ManagedCodeAgentRecord>;
+  paused: boolean;
   stopping: boolean;
 };
 
@@ -106,6 +107,20 @@ export type BroadcastMessageResult = {
   targetNames: string[];
 };
 
+export type PauseTeamResult = {
+  teamName: string;
+  changed: boolean;
+  ignored: boolean;
+  targetNames: string[];
+};
+
+export type ResumeTeamResult = {
+  teamName: string;
+  changed: boolean;
+  ignored: boolean;
+  targetNames: string[];
+};
+
 export type TeamManagerDeps = {
   spawnChildRuntime?: (
     options: SpawnChildRuntimeOptions,
@@ -131,6 +146,9 @@ export class TeamManagerError extends Error {
   }
 }
 
+export const TEAM_CONTROL_MESSAGE_PAUSED = "team-paused";
+export const TEAM_CONTROL_MESSAGE_RESUMED = "team-resumed";
+
 export class TeamManager {
   readonly #spawnChildRuntime: NonNullable<
     TeamManagerDeps["spawnChildRuntime"]
@@ -149,7 +167,11 @@ export class TeamManager {
   }
 
   getActiveTeam():
-    | { snapshot: TeamSnapshot; codeAgents: ManagedCodeAgent[] }
+    | {
+        snapshot: TeamSnapshot;
+        codeAgents: ManagedCodeAgent[];
+        paused: boolean;
+      }
     | undefined {
     const activeTeam = this.#activeTeam;
     if (activeTeam === undefined) {
@@ -158,6 +180,7 @@ export class TeamManager {
 
     return {
       snapshot: activeTeam.snapshot,
+      paused: activeTeam.paused,
       codeAgents: [...activeTeam.codeAgents.values()].map(
         ({ runtime, ...agent }) => ({
           ...agent,
@@ -184,6 +207,7 @@ export class TeamManager {
       snapshot: params.snapshot,
       sink,
       codeAgents: new Map(),
+      paused: false,
       stopping: false,
     };
     this.#activeTeam = activeTeam;
@@ -332,19 +356,85 @@ export class TeamManager {
       };
     }
 
-    await Promise.all(
-      targetNames.map((targetName) =>
-        appendTeamMailboxEntry(activeTeam.snapshot.name, targetName, {
-          sender: "leader",
-          subject: TEAM_MAILBOX_SUBJECT_BROADCAST,
-          message,
-        }),
-      ),
-    );
+    await this.#broadcastToCodeAgents(activeTeam, message);
 
     return {
       teamName: activeTeam.snapshot.name,
       agentType: "code",
+      ignored: false,
+      targetNames,
+    };
+  }
+
+  async pauseActiveTeam(): Promise<PauseTeamResult> {
+    const activeTeam = this.#requireActiveTeam();
+    const targetNames = [...activeTeam.codeAgents.keys()];
+
+    if (activeTeam.stopping) {
+      return {
+        teamName: activeTeam.snapshot.name,
+        changed: false,
+        ignored: true,
+        targetNames,
+      };
+    }
+
+    if (activeTeam.paused) {
+      return {
+        teamName: activeTeam.snapshot.name,
+        changed: false,
+        ignored: false,
+        targetNames,
+      };
+    }
+
+    await this.#broadcastToCodeAgents(activeTeam, TEAM_CONTROL_MESSAGE_PAUSED);
+    activeTeam.paused = true;
+    activeTeam.sink.setTeamStatus?.("Paused");
+    activeTeam.sink.addEvent?.(
+      `Paused new task claiming for team "${activeTeam.snapshot.name}"`,
+    );
+
+    return {
+      teamName: activeTeam.snapshot.name,
+      changed: true,
+      ignored: false,
+      targetNames,
+    };
+  }
+
+  async resumeActiveTeam(): Promise<ResumeTeamResult> {
+    const activeTeam = this.#requireActiveTeam();
+    const targetNames = [...activeTeam.codeAgents.keys()];
+
+    if (activeTeam.stopping) {
+      return {
+        teamName: activeTeam.snapshot.name,
+        changed: false,
+        ignored: true,
+        targetNames,
+      };
+    }
+
+    if (!activeTeam.paused) {
+      return {
+        teamName: activeTeam.snapshot.name,
+        changed: false,
+        ignored: false,
+        targetNames,
+      };
+    }
+
+    await this.#broadcastToCodeAgents(activeTeam, TEAM_CONTROL_MESSAGE_RESUMED);
+    activeTeam.paused = false;
+    activeTeam.sink.setTeamStatus?.("Active");
+    activeTeam.sink.addEvent?.(
+      `Resumed task claiming for team "${activeTeam.snapshot.name}"`,
+    );
+
+    return {
+      teamName: activeTeam.snapshot.name,
+      changed: true,
       ignored: false,
       targetNames,
     };
@@ -427,6 +517,21 @@ export class TeamManager {
       ignored: false,
       subject,
     };
+  }
+
+  async #broadcastToCodeAgents(
+    activeTeam: ActiveTeamRuntime,
+    message: string,
+  ): Promise<void> {
+    await Promise.all(
+      [...activeTeam.codeAgents.keys()].map((targetName) =>
+        appendTeamMailboxEntry(activeTeam.snapshot.name, targetName, {
+          sender: "leader",
+          subject: TEAM_MAILBOX_SUBJECT_BROADCAST,
+          message,
+        }),
+      ),
+    );
   }
 
   #requireActiveTeam(): ActiveTeamRuntime {
