@@ -1,16 +1,12 @@
 # Project Guidelines
 
----
 
 ## Project Documentation
 
 Project documentation is a work in progress, and all the files are currently in the ./docs folder.
 
----
-
 **IMPORTANT:** If there is any ambiguity in what you need to do, or if you are unsure of the best way to proceed, _ALWAYS_ ask for clarification. _DO NOT_ make assumptions or decide for yourself the best way to proceed.
 
----
 ## Workflow
 
 ### Code Workflow
