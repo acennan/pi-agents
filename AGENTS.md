@@ -39,7 +39,8 @@ Project documentation is a work in progress, and all the files are currently in 
 ## Development Environment
 
 ### Runtime and tooling
-- Runtime: Bun (see packageManager in package.json for the pinned version).
+- Runtime: Bun (see packageManager in package.json for the pinned version). 
+- Testing: Use `vitest` to run tests. Ensure tests are coded as required by the library. Use the `find-docs` skill to look up API documentation for library ID `/vitest-dev/vitest`.
 
 ### TypeScript
 - Write strict, idiomatic TS
@@ -92,7 +93,7 @@ Use jdocmunch-mcp for local document lookup whenever available. Supports the fol
 
 ## Beads Integration
 
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue trackingIssues are stored in `.beads/` and tracked in git.
+This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking. Issues are stored in `.beads/` and tracked in git.
 
 ### br Commands for Issue Management
 
