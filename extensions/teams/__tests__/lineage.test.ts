@@ -12,6 +12,7 @@ import {
   isRemedialBeadsTask,
   lineageBranchName,
   lineageWorktreePath,
+  prepareClaimedTaskLineage,
   type TeamLineageError,
 } from "../tasks/lineage.ts";
 import {
@@ -22,7 +23,8 @@ import {
 
 const TEST_ROOT = join(tmpdir(), "pi-teams-lineage-test-tmp");
 const TEAM_NAME = "lineage-team";
-const WORKSPACE_PATH = "/tmp/team-workspace";
+const WORKSPACE_PATH = join(TEST_ROOT, "workspace");
+const WORKTREE_ROOT = join(TEST_ROOT, "worktrees");
 
 afterEach(async () => {
   delete process.env.PI_TEAMS_ROOT;
@@ -32,6 +34,8 @@ afterEach(async () => {
 beforeEach(async () => {
   process.env.PI_TEAMS_ROOT = TEST_ROOT;
   await mkdir(TEST_ROOT, { recursive: true });
+  await mkdir(WORKSPACE_PATH, { recursive: true });
+  await mkdir(WORKTREE_ROOT, { recursive: true });
 });
 
 describe("initializeTaskLineage/getTaskLineage", () => {
@@ -59,7 +63,7 @@ describe("initializeTaskLineage/getTaskLineage", () => {
     await initializeTaskLineage({
       teamName: TEAM_NAME,
       taskId: "pi-agents-seed",
-      worktreePath: "/tmp/worktrees/task-pi-agents-seed",
+      worktreePath: join(WORKTREE_ROOT, "task-pi-agents-seed"),
       branchName: "task-pi-agents-seed",
     });
 
@@ -71,7 +75,7 @@ describe("initializeTaskLineage/getTaskLineage", () => {
           {
             rootTaskId: "pi-agents-bad-root",
             taskIds: ["pi-agents-other"],
-            worktreePath: "/tmp/worktrees/task-pi-agents-bad-root",
+            worktreePath: join(WORKTREE_ROOT, "task-pi-agents-bad-root"),
             branchName: "task-pi-agents-bad-root",
             reviewCycleCount: 0,
           },
@@ -93,12 +97,200 @@ describe("initializeTaskLineage/getTaskLineage", () => {
   });
 });
 
+describe("prepareClaimedTaskLineage", () => {
+  it("restores a missing worktree for an existing lineage so retries and restarts stay on the same branch", async () => {
+    const rootTaskId = "pi-agents-150";
+    const branchName = lineageBranchName(rootTaskId);
+    const worktreePath = lineageWorktreePath(WORKTREE_ROOT, rootTaskId);
+    await initializeTaskLineage({
+      teamName: TEAM_NAME,
+      taskId: rootTaskId,
+      worktreePath,
+      branchName,
+      reviewCycleCount: 2,
+    });
+
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (_command, args) => {
+      calls.push([...args]);
+
+      switch (args.join(" ")) {
+        case `worktree add ${worktreePath} ${branchName}`:
+          return { stdout: "", stderr: "" };
+        default:
+          throw new Error(`Unexpected command: ${args.join(" ")}`);
+      }
+    };
+
+    const result = await prepareClaimedTaskLineage({
+      teamName: TEAM_NAME,
+      workspacePath: WORKSPACE_PATH,
+      worktreeDir: WORKTREE_ROOT,
+      task: {
+        id: rootTaskId,
+        title: "Original task",
+        status: "in_progress",
+        priority: 1,
+        labels: [],
+        dependencies: [],
+      },
+      runner,
+    });
+
+    expect(result).toEqual({
+      lineage: {
+        rootTaskId,
+        taskIds: [rootTaskId],
+        worktreePath,
+        branchName,
+        reviewCycleCount: 2,
+      },
+      worktreePath,
+      branchName,
+      createdLineage: false,
+      createdWorktree: true,
+    });
+    expect(calls).toEqual([["worktree", "add", worktreePath, branchName]]);
+  });
+
+  it("verifies an existing worktree already points at the stored lineage branch", async () => {
+    const rootTaskId = "pi-agents-151";
+    const branchName = lineageBranchName(rootTaskId);
+    const worktreePath = lineageWorktreePath(WORKTREE_ROOT, rootTaskId);
+    await initializeTaskLineage({
+      teamName: TEAM_NAME,
+      taskId: rootTaskId,
+      worktreePath,
+      branchName,
+      reviewCycleCount: 1,
+    });
+    await mkdir(worktreePath, { recursive: true });
+
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (_command, args) => {
+      calls.push([...args]);
+
+      switch (args.join(" ")) {
+        case "rev-parse --abbrev-ref HEAD":
+          return { stdout: `${branchName}\n`, stderr: "" };
+        default:
+          throw new Error(`Unexpected command: ${args.join(" ")}`);
+      }
+    };
+
+    const result = await prepareClaimedTaskLineage({
+      teamName: TEAM_NAME,
+      workspacePath: WORKSPACE_PATH,
+      worktreeDir: WORKTREE_ROOT,
+      task: {
+        id: rootTaskId,
+        title: "Existing task",
+        status: "in_progress",
+        priority: 1,
+        labels: [],
+        dependencies: [],
+      },
+      runner,
+    });
+
+    expect(result.createdLineage).toBe(false);
+    expect(result.createdWorktree).toBe(false);
+    expect(result.worktreePath).toBe(worktreePath);
+    expect(calls).toEqual([["rev-parse", "--abbrev-ref", "HEAD"]]);
+  });
+
+  it("recovers a fresh-task retry by reusing the previously created branch/worktree and writing lineage state", async () => {
+    const rootTaskId = "pi-agents-151-retry";
+    const branchName = lineageBranchName(rootTaskId);
+    const worktreePath = lineageWorktreePath(WORKTREE_ROOT, rootTaskId);
+
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (_command, args) => {
+      calls.push([...args]);
+
+      switch (args.join(" ")) {
+        case `worktree add -b ${branchName} ${worktreePath} main`:
+          throw new Error(
+            `fatal: a branch named '${branchName}' already exists`,
+          );
+        case `worktree add ${worktreePath} ${branchName}`:
+          return { stdout: "", stderr: "" };
+        default:
+          throw new Error(`Unexpected command: ${args.join(" ")}`);
+      }
+    };
+
+    const result = await prepareClaimedTaskLineage({
+      teamName: TEAM_NAME,
+      workspacePath: WORKSPACE_PATH,
+      worktreeDir: WORKTREE_ROOT,
+      task: {
+        id: rootTaskId,
+        title: "Retried task",
+        status: "in_progress",
+        priority: 1,
+        labels: [],
+        dependencies: [],
+      },
+      runner,
+    });
+
+    expect(result).toEqual({
+      lineage: {
+        rootTaskId,
+        taskIds: [rootTaskId],
+        worktreePath,
+        branchName,
+        reviewCycleCount: 0,
+      },
+      worktreePath,
+      branchName,
+      createdLineage: true,
+      createdWorktree: false,
+    });
+    await expect(getTaskLineage(TEAM_NAME, rootTaskId)).resolves.toEqual(
+      result.lineage,
+    );
+    expect(calls).toEqual([
+      ["worktree", "add", "-b", branchName, worktreePath, "main"],
+      ["worktree", "add", worktreePath, branchName],
+    ]);
+  });
+
+  it("rejects remedial tasks when lineage state is missing", async () => {
+    await expect(
+      prepareClaimedTaskLineage({
+        teamName: TEAM_NAME,
+        workspacePath: WORKSPACE_PATH,
+        worktreeDir: WORKTREE_ROOT,
+        task: {
+          id: "pi-agents-151.1",
+          title: "Fix follow-up",
+          status: "in_progress",
+          priority: 2,
+          parentTaskId: "pi-agents-151",
+          labels: [],
+          dependencies: [
+            {
+              id: "pi-agents-151",
+              dependencyType: "parent-child",
+            },
+          ],
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: "TeamLineageError",
+      code: "missing-lineage",
+    } satisfies Partial<TeamLineageError>);
+  });
+});
+
 describe("createRemedialTaskLineage", () => {
   it("creates remedial beads linkage and reuses existing lineage state", async () => {
     const rootLineage = await initializeTaskLineage({
       teamName: TEAM_NAME,
       taskId: "pi-agents-200",
-      worktreePath: "/tmp/worktrees/task-pi-agents-200",
+      worktreePath: join(WORKTREE_ROOT, "task-pi-agents-200"),
       branchName: lineageBranchName("pi-agents-200"),
       reviewCycleCount: 1,
     });
@@ -202,7 +394,7 @@ describe("createRemedialTaskLineage", () => {
     await initializeTaskLineage({
       teamName: TEAM_NAME,
       taskId: "pi-agents-300",
-      worktreePath: "/tmp/worktrees/task-pi-agents-300",
+      worktreePath: join(WORKTREE_ROOT, "task-pi-agents-300"),
       branchName: lineageBranchName("pi-agents-300"),
     });
 

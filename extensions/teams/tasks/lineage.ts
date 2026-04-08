@@ -12,6 +12,11 @@
 
 import { resolve } from "node:path";
 import {
+  createTaskWorktreeFromMain,
+  ensureTaskWorktree,
+  TeamWorktreeError,
+} from "../git/worktree.ts";
+import {
   BEADS_DEPENDENCY_TYPE_DISCOVERED_FROM,
   BEADS_DEPENDENCY_TYPE_PARENT_CHILD,
   type BeadsTask,
@@ -52,6 +57,22 @@ export type CreateRemedialTaskLineageOptions = {
 export type CreateRemedialTaskLineageResult = {
   task: BeadsTask;
   lineage: TaskLineageRecord;
+};
+
+export type PrepareClaimedTaskLineageOptions = {
+  teamName: string;
+  workspacePath: string;
+  worktreeDir: string;
+  task: BeadsTask;
+  runner?: CommandRunner;
+};
+
+export type PrepareClaimedTaskLineageResult = {
+  lineage: TaskLineageRecord;
+  worktreePath: string;
+  branchName: string;
+  createdLineage: boolean;
+  createdWorktree: boolean;
 };
 
 export class TeamLineageError extends Error {
@@ -189,4 +210,86 @@ export async function createRemedialTaskLineage(
       { cause: err },
     );
   }
+}
+
+export async function prepareClaimedTaskLineage(
+  options: PrepareClaimedTaskLineageOptions,
+): Promise<PrepareClaimedTaskLineageResult> {
+  const existingLineage = await getTaskLineage(
+    options.teamName,
+    options.task.id,
+  );
+  if (existingLineage !== undefined) {
+    const worktree = await ensureTaskWorktree({
+      workspacePath: options.workspacePath,
+      worktreePath: existingLineage.worktreePath,
+      branchName: existingLineage.branchName,
+      runner: options.runner,
+    });
+
+    return {
+      lineage: existingLineage,
+      worktreePath: worktree.worktreePath,
+      branchName: worktree.branchName,
+      createdLineage: false,
+      createdWorktree: worktree.created,
+    };
+  }
+
+  if (isRemedialBeadsTask(options.task)) {
+    throw new TeamLineageError(
+      "missing-lineage",
+      `Cannot continue remedial task "${options.task.id}" without an existing lineage record`,
+    );
+  }
+
+  const branchName = lineageBranchName(options.task.id);
+  const worktreePath = lineageWorktreePath(
+    options.worktreeDir,
+    options.task.id,
+  );
+  const worktree = await createOrRecoverFreshTaskWorktree({
+    workspacePath: options.workspacePath,
+    worktreePath,
+    branchName,
+    runner: options.runner,
+  });
+  const lineage = await initializeTaskLineage({
+    teamName: options.teamName,
+    taskId: options.task.id,
+    worktreePath: worktree.worktreePath,
+    branchName: worktree.branchName,
+  });
+
+  return {
+    lineage,
+    worktreePath: worktree.worktreePath,
+    branchName: worktree.branchName,
+    createdLineage: true,
+    createdWorktree: worktree.created,
+  };
+}
+
+async function createOrRecoverFreshTaskWorktree(options: {
+  workspacePath: string;
+  worktreePath: string;
+  branchName: string;
+  runner?: CommandRunner;
+}) {
+  try {
+    return await createTaskWorktreeFromMain(options);
+  } catch (err: unknown) {
+    if (
+      !(err instanceof TeamWorktreeError) ||
+      err.code !== "worktree-already-exists"
+    ) {
+      throw err;
+    }
+  }
+
+  const restoredWorktree = await ensureTaskWorktree(options);
+  return {
+    ...restoredWorktree,
+    created: false,
+  };
 }

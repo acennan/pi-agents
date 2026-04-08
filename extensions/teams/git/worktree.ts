@@ -11,7 +11,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
@@ -36,6 +36,25 @@ export type RestartWorkspaceMatch = {
   storedWorkspaceRealpath: string;
 };
 
+type TaskWorktreeOptions = {
+  workspacePath: string;
+  worktreePath: string;
+  branchName: string;
+  runner?: CommandRunner;
+};
+
+export type CreateTaskWorktreeOptions = TaskWorktreeOptions & {
+  baseRef?: string;
+};
+
+export type EnsureTaskWorktreeOptions = TaskWorktreeOptions;
+
+export type EnsureTaskWorktreeResult = {
+  worktreePath: string;
+  branchName: string;
+  created: boolean;
+};
+
 /** User-facing startup/preflight failure. */
 export class TeamPreflightError extends Error {
   readonly code:
@@ -53,6 +72,25 @@ export class TeamPreflightError extends Error {
   ) {
     super(message, options);
     this.name = "TeamPreflightError";
+    this.code = code;
+  }
+}
+
+export class TeamWorktreeError extends Error {
+  readonly code:
+    | "worktree-already-exists"
+    | "worktree-create-failed"
+    | "worktree-restore-failed"
+    | "worktree-inspect-failed"
+    | "worktree-branch-mismatch";
+
+  constructor(
+    code: TeamWorktreeError["code"],
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "TeamWorktreeError";
     this.code = code;
   }
 }
@@ -80,6 +118,130 @@ export const defaultCommandRunner: CommandRunner = async (
     );
   }
 };
+
+/** Create a brand-new task lineage worktree from `main`. */
+export async function createTaskWorktreeFromMain(
+  options: CreateTaskWorktreeOptions,
+): Promise<EnsureTaskWorktreeResult> {
+  const runner = options.runner ?? defaultCommandRunner;
+  const resolvedWorkspacePath = resolve(options.workspacePath);
+  const resolvedWorktreePath = resolve(options.worktreePath);
+  await mkdir(dirname(resolvedWorktreePath), { recursive: true });
+
+  try {
+    await runner(
+      "git",
+      [
+        "worktree",
+        "add",
+        "-b",
+        options.branchName,
+        resolvedWorktreePath,
+        options.baseRef ?? "main",
+      ],
+      {
+        cwd: resolvedWorkspacePath,
+      },
+    );
+  } catch (err: unknown) {
+    if (isExistingWorktreeConflict(err)) {
+      throw new TeamWorktreeError(
+        "worktree-already-exists",
+        `Worktree "${resolvedWorktreePath}" or branch "${options.branchName}" already exists`,
+        { cause: err },
+      );
+    }
+
+    throw new TeamWorktreeError(
+      "worktree-create-failed",
+      `Failed to create worktree "${resolvedWorktreePath}" for branch "${options.branchName}" from "${options.baseRef ?? "main"}"`,
+      { cause: err },
+    );
+  }
+
+  return {
+    worktreePath: resolvedWorktreePath,
+    branchName: options.branchName,
+    created: true,
+  };
+}
+
+/**
+ * Ensure an existing lineage worktree is available for continued work.
+ *
+ * When the recorded path still exists, verify the checked-out branch matches the
+ * stored lineage branch. When the worktree directory is missing (for example
+ * after a restart), reattach the existing branch at the recorded path.
+ */
+export async function ensureTaskWorktree(
+  options: EnsureTaskWorktreeOptions,
+): Promise<EnsureTaskWorktreeResult> {
+  const runner = options.runner ?? defaultCommandRunner;
+  const resolvedWorkspacePath = resolve(options.workspacePath);
+  const resolvedWorktreePath = resolve(options.worktreePath);
+  const existingStats = await stat(resolvedWorktreePath).catch(
+    (err: unknown) => {
+      if (isMissingFileError(err)) {
+        return undefined;
+      }
+
+      throw new TeamWorktreeError(
+        "worktree-inspect-failed",
+        `Failed to inspect worktree path "${resolvedWorktreePath}"`,
+        { cause: err },
+      );
+    },
+  );
+
+  if (existingStats?.isDirectory() === true) {
+    const currentBranchName = await readCurrentBranchName(
+      resolvedWorktreePath,
+      runner,
+    );
+    if (currentBranchName !== options.branchName) {
+      throw new TeamWorktreeError(
+        "worktree-branch-mismatch",
+        `Expected worktree "${resolvedWorktreePath}" to be on branch "${options.branchName}", but found "${currentBranchName}"`,
+      );
+    }
+
+    return {
+      worktreePath: resolvedWorktreePath,
+      branchName: options.branchName,
+      created: false,
+    };
+  }
+
+  if (existingStats !== undefined) {
+    throw new TeamWorktreeError(
+      "worktree-inspect-failed",
+      `Worktree path "${resolvedWorktreePath}" exists but is not a directory`,
+    );
+  }
+
+  await mkdir(dirname(resolvedWorktreePath), { recursive: true });
+
+  try {
+    await addExistingTaskWorktree(
+      resolvedWorkspacePath,
+      resolvedWorktreePath,
+      options.branchName,
+      runner,
+    );
+  } catch (err: unknown) {
+    throw new TeamWorktreeError(
+      "worktree-restore-failed",
+      `Failed to restore worktree "${resolvedWorktreePath}" for branch "${options.branchName}"`,
+      { cause: err },
+    );
+  }
+
+  return {
+    worktreePath: resolvedWorktreePath,
+    branchName: options.branchName,
+    created: true,
+  };
+}
 
 /**
  * Validate that `workspacePath` exists, resolves to the git repository root,
@@ -250,6 +412,54 @@ export async function ensureWorktreeDirWritable(
   return resolvedWorktreeDir;
 }
 
+async function addExistingTaskWorktree(
+  workspacePath: string,
+  worktreePath: string,
+  branchName: string,
+  runner: CommandRunner,
+): Promise<void> {
+  try {
+    await runner("git", ["worktree", "add", worktreePath, branchName], {
+      cwd: workspacePath,
+    });
+    return;
+  } catch (err: unknown) {
+    if (!isExistingWorktreeConflict(err)) {
+      throw err;
+    }
+  }
+
+  await runner("git", ["worktree", "prune"], {
+    cwd: workspacePath,
+  });
+  await runner("git", ["worktree", "add", worktreePath, branchName], {
+    cwd: workspacePath,
+  });
+}
+
+async function readCurrentBranchName(
+  worktreePath: string,
+  runner: CommandRunner,
+): Promise<string> {
+  try {
+    const result = await runner("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: worktreePath,
+    });
+    const branchName = result.stdout.trim();
+    if (branchName.length === 0) {
+      throw new Error("Branch name was empty");
+    }
+
+    return branchName;
+  } catch (err: unknown) {
+    throw new TeamWorktreeError(
+      "worktree-inspect-failed",
+      `Failed to read the current branch for worktree "${worktreePath}"`,
+      { cause: err },
+    );
+  }
+}
+
 async function resolveExistingRealpath(
   path: string,
   message: string,
@@ -261,4 +471,31 @@ async function resolveExistingRealpath(
       cause: err,
     });
   }
+}
+
+function isMissingFileError(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && "code" in err && err.code === "ENOENT";
+}
+
+function isExistingWorktreeConflict(err: unknown): boolean {
+  return collectErrorMessages(err).some((message) => {
+    const trimmedMessage = message.trim();
+    return (
+      /^fatal: a branch named '.+' already exists$/m.test(trimmedMessage) ||
+      /^fatal: '.+' already exists$/m.test(trimmedMessage) ||
+      /^fatal: '.+' is already checked out(?: at '.+')?$/m.test(trimmedMessage)
+    );
+  });
+}
+
+function collectErrorMessages(err: unknown): string[] {
+  const messages: string[] = [];
+  let current: unknown = err;
+
+  while (current instanceof Error) {
+    messages.push(current.message);
+    current = current.cause;
+  }
+
+  return messages;
 }
