@@ -33,6 +33,7 @@ import {
   type SupportedThinkingLevel,
 } from "../leader/create-team.ts";
 import type { ProcessRole } from "../roles.ts";
+import { installCodeAgentContextPruning } from "./context-pruning.ts";
 import {
   classifyMailboxEntryDelivery,
   ensureMailboxFiles,
@@ -74,7 +75,7 @@ export type TeamChildRuntimeReadyEvent = {
 
 type AgentSessionLike = Pick<
   Awaited<ReturnType<typeof createAgentSession>>["session"],
-  "dispose" | "followUp" | "setFollowUpMode" | "steer"
+  "agent" | "dispose" | "followUp" | "setFollowUpMode" | "steer"
 >;
 
 type SessionFactory = (
@@ -327,6 +328,10 @@ export async function bootstrapTeamChildRuntime(
   });
 
   session.setFollowUpMode("one-at-a-time");
+
+  if (args.role === "code") {
+    installCodeAgentContextPruning(session);
+  }
 
   return {
     args,
