@@ -3,11 +3,15 @@ import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { codeAgentCompletionSubject } from "../agents/code-agent.ts";
 import {
+  appendLeaderMailboxEntry,
   ensureTeamMailbox,
   readMailboxEntries,
   teamMailboxInboxPath,
 } from "../agents/mailbox.ts";
+import { TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR } from "../agents/runtime-entry.ts";
+import { simplifyAgentCompletionSubject } from "../agents/simplify-agent.ts";
 import type {
   ChildRuntimeExit,
   SpawnChildRuntimeOptions,
@@ -145,6 +149,21 @@ function createExit(
 
 function flushMicrotasks(): Promise<void> {
   return Promise.resolve();
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  description: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  throw new Error(`Timed out waiting for ${description}`);
 }
 
 function getAgentNames(agents: ManagedCodeAgent[]): string[] {
@@ -353,6 +372,154 @@ describe("TeamManager", () => {
       "Code agent code-1 crashed (exit code 17)",
       "error",
     );
+  });
+
+  it("logs when a code agent completes a task but no simplify sub-agent is configured", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+    const lifecycleSink = createLifecycleSink();
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code" }],
+      }),
+      lifecycleSink,
+      env: {
+        PI_TEAM_MAILBOX_POLL_SECS: "1",
+      },
+    });
+
+    await appendLeaderMailboxEntry("alpha", {
+      sender: "code-1",
+      subject: codeAgentCompletionSubject("pi-agents-7"),
+      message: JSON.stringify({
+        taskId: "pi-agents-7",
+        agentName: "code-1",
+        branchName: "task-pi-agents-7",
+        worktreePath: "/workspace/project/.worktrees/task-pi-agents-7",
+        commitId: "abc123def456",
+        touchedFiles: ["src/example.ts"],
+        summaryPath: "/tmp/task-pi-agents-7-summary.md",
+        completedAt: "2026-04-08T20:00:00.000Z",
+      }),
+    });
+
+    await waitFor(
+      () =>
+        lifecycleSink.addEvent.mock.calls.some((call) =>
+          String(call[0]).includes(
+            'Code agent code-1 completed task "pi-agents-7" but no simplify sub-agent is configured',
+          ),
+        ),
+      "missing simplify-agent event",
+    );
+
+    expect(spawn.spawnChildRuntime).toHaveBeenCalledTimes(1);
+    expect(spawn.runtimes).toHaveLength(1);
+    expect(lifecycleSink.notify).not.toHaveBeenCalled();
+
+    await manager.stopActiveTeam();
+  });
+
+  it("spawns a simplify child when a code-agent completion reaches the leader inbox", async () => {
+    const spawn = createControlledSpawnStub();
+    const manager = new TeamManager({
+      spawnChildRuntime: spawn.spawnChildRuntime,
+    });
+    const lifecycleSink = createLifecycleSink();
+
+    await manager.startTeam({
+      snapshot: createSnapshot({
+        agents: [{ nameTemplate: "code", type: "code" }],
+        subAgents: [
+          {
+            nameTemplate: "simplify",
+            type: "simplify",
+            maxAllowed: 1,
+            tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
+          },
+        ],
+      }),
+      lifecycleSink,
+      env: {
+        PI_TEAM_MAILBOX_POLL_SECS: "1",
+      },
+    });
+
+    const completionReport = {
+      taskId: "pi-agents-7",
+      agentName: "code-1",
+      branchName: "task-pi-agents-7",
+      worktreePath: "/workspace/project/.worktrees/task-pi-agents-7",
+      commitId: "abc123def456",
+      touchedFiles: ["src/example.ts"],
+      summaryPath: "/tmp/task-pi-agents-7-summary.md",
+      completedAt: "2026-04-08T20:00:00.000Z",
+    };
+    await appendLeaderMailboxEntry("alpha", {
+      sender: "code-1",
+      subject: codeAgentCompletionSubject("pi-agents-7"),
+      message: JSON.stringify(completionReport),
+    });
+
+    await waitFor(() => spawn.runtimes.length === 2, "simplify runtime spawn");
+
+    const simplifyRuntime = spawn.runtimes[1];
+    if (simplifyRuntime === undefined) {
+      throw new Error("Expected a simplify runtime");
+    }
+
+    expect(simplifyRuntime.options).toMatchObject({
+      role: "simplify",
+      agentName: "simplify-1-pi-agents-7",
+      taskId: "pi-agents-7",
+      workspacePath: "/workspace/project",
+      cwd: "/workspace/project/.worktrees/task-pi-agents-7",
+    });
+    expect(
+      simplifyRuntime.options.env?.[TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR],
+    ).toBe(JSON.stringify(completionReport));
+    expect(lifecycleSink.addEvent).toHaveBeenCalledWith(
+      'Started simplify agent simplify-1-pi-agents-7 (pid 4101) for task "pi-agents-7"',
+    );
+
+    await appendLeaderMailboxEntry("alpha", {
+      sender: "simplify-1-pi-agents-7",
+      subject: simplifyAgentCompletionSubject("pi-agents-7"),
+      message: JSON.stringify({
+        taskId: "pi-agents-7",
+        agentName: "simplify-1-pi-agents-7",
+        branchName: "task-pi-agents-7",
+        worktreePath: "/workspace/project/.worktrees/task-pi-agents-7",
+        commitId: "def456",
+        touchedFiles: ["src/example.ts", "src/extra.ts"],
+        summaryPath: "/tmp/task-pi-agents-7-summary.md",
+        completedAt: "2026-04-08T20:05:00.000Z",
+        changed: true,
+      }),
+    });
+
+    await waitFor(
+      () =>
+        lifecycleSink.addEvent.mock.calls.some((call) =>
+          String(call[0]).includes(
+            'Simplify agent simplify-1-pi-agents-7 completed task "pi-agents-7" with 2 touched files',
+          ),
+        ),
+      "simplify completion event",
+    );
+
+    simplifyRuntime.resolve(
+      createExit(simplifyRuntime.options, {
+        code: 0,
+        expectedExit: true,
+        crashed: false,
+      }),
+    );
+    await flushMicrotasks();
+    await manager.stopActiveTeam();
   });
 
   it("queues send and steer messages to active agent mailboxes", async () => {

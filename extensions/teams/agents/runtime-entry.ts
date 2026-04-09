@@ -33,6 +33,7 @@ import {
   type SupportedThinkingLevel,
 } from "../leader/create-team.ts";
 import type { ProcessRole } from "../roles.ts";
+import { parseCodeAgentCompletionReport } from "./code-agent.ts";
 import { installCodeAgentContextPruning } from "./context-pruning.ts";
 import {
   classifyMailboxEntryDelivery,
@@ -42,12 +43,17 @@ import {
   teamMailboxCursorPath,
   teamMailboxInboxPath,
 } from "./mailbox.ts";
+import {
+  completeSimplifyAgentTask,
+  type SimplifyAgentSessionLike,
+} from "./simplify-agent.ts";
 
 export const TEAM_CHILD_RUNTIME_READY_EVENT = "team-child-ready";
 export const TEAM_CHILD_ROLE_ENV_VAR = "PI_TEAM_ROLE";
 export const TEAM_CHILD_TEAM_NAME_ENV_VAR = "PI_TEAM_NAME";
 export const TEAM_CHILD_AGENT_NAME_ENV_VAR = "PI_TEAM_AGENT_NAME";
 export const TEAM_CHILD_TASK_ID_ENV_VAR = "PI_TEAM_TASK_ID";
+export const TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR = "PI_TEAM_SIMPLIFY_INPUT";
 
 export type MemberProcessRole = Exclude<ProcessRole, "leader">;
 
@@ -102,6 +108,9 @@ export type RunTeamChildRuntimeOptions =
     stdout?: Pick<NodeJS.WritableStream, "write">;
     onReady?: (context: TeamChildRuntimeRunContext) => Promise<void> | void;
     installSignalHandlers?: boolean;
+    runSimplifyTask?: (
+      context: TeamChildRuntimeRunContext,
+    ) => Promise<void> | void;
   };
 
 export type TeamChildRuntimeRunContext = TeamChildRuntimeBootstrap & {
@@ -354,6 +363,7 @@ export async function runTeamChildRuntime(
     stdout = process.stdout,
     onReady,
     installSignalHandlers = true,
+    runSimplifyTask,
     ...dependencies
   } = options;
   const bootstrap = await bootstrapTeamChildRuntime(argv, dependencies);
@@ -404,11 +414,14 @@ export async function runTeamChildRuntime(
       }),
     });
 
-    await onReady?.({
+    const runtimeContext = {
       ...bootstrap,
       requestShutdown,
       shutdownSignal,
-    });
+    } satisfies TeamChildRuntimeRunContext;
+
+    await onReady?.(runtimeContext);
+    await runRoleWork(runtimeContext, runSimplifyTask);
 
     await shutdownSignal;
   } finally {
@@ -585,6 +598,45 @@ function parseToolNames(value: string): ToolName[] {
   });
 }
 
+async function runRoleWork(
+  context: TeamChildRuntimeRunContext,
+  runSimplifyTask:
+    | ((context: TeamChildRuntimeRunContext) => Promise<void> | void)
+    | undefined,
+): Promise<void> {
+  switch (context.args.role) {
+    case "simplify":
+      await (runSimplifyTask ?? defaultRunSimplifyTask)(context);
+      context.requestShutdown();
+      return;
+    case "code":
+    case "review":
+    case "test":
+    case "commit":
+      return;
+  }
+}
+
+async function defaultRunSimplifyTask(
+  context: TeamChildRuntimeRunContext,
+): Promise<void> {
+  const serializedReport = readRequiredRuntimeEnv(
+    context.args.env,
+    TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR,
+  );
+
+  await completeSimplifyAgentTask({
+    teamName: context.args.teamName,
+    agentName: context.args.agentName,
+    completion: parseCodeAgentCompletionReport(serializedReport),
+    session: context.session as SimplifyAgentSessionLike,
+    env: {
+      ...process.env,
+      ...context.args.env,
+    },
+  });
+}
+
 function installShutdownSignalHandlers(
   requestShutdown: () => void,
 ): () => void {
@@ -618,6 +670,21 @@ function formatRuntimeError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function readRequiredRuntimeEnv(
+  env: Record<string, string>,
+  key: string,
+): string {
+  const value = env[key];
+  if (value !== undefined && value.trim().length > 0) {
+    return value;
+  }
+
+  throw new TeamChildRuntimeError(
+    "missing-arg",
+    `Missing required runtime environment value ${key}`,
+  );
 }
 
 function isMainModule(moduleUrl: string): boolean {

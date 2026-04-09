@@ -333,4 +333,56 @@ describe("runTeamChildRuntime", () => {
     });
     expect(dispose).toHaveBeenCalledOnce();
   });
+
+  it("runs one-shot simplify work and shuts down automatically", async () => {
+    const model = requireModel("openai");
+    const dispose = vi.fn();
+    const session = {
+      dispose,
+      followUp: vi.fn(async () => {}),
+      setFollowUpMode: vi.fn(),
+      steer: vi.fn(async () => {}),
+    };
+    const runSimplifyTask = vi.fn(async ({ args }) => {
+      expect(args.role).toBe("simplify");
+      expect(args.agentName).toBe("simplify-1");
+      expect(args.taskId).toBe("pi-agents-321");
+    });
+
+    await runTeamChildRuntime({
+      argv: [
+        "--role",
+        "simplify",
+        "--team",
+        "alpha",
+        "--agent",
+        "simplify-1",
+        "--workspace",
+        "/tmp/workspace",
+        "--cwd",
+        "/tmp/workspace/task-pi-agents-321",
+        "--task",
+        "pi-agents-321",
+        "--model",
+        `${model.provider}/${model.id}`,
+        "--thinking",
+        "medium",
+        "--tools",
+        "read,edit,write",
+      ],
+      stdout: {
+        write(_chunk: string) {
+          return true;
+        },
+      },
+      resolveModel: () => model,
+      createTools: () => [],
+      createSession: async () => ({ session: session as never }),
+      installSignalHandlers: false,
+      runSimplifyTask,
+    });
+
+    expect(runSimplifyTask).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
 });

@@ -8,13 +8,24 @@
 
 import { existsSync } from "node:fs";
 import {
+  type CodeAgentCompletionReport,
+  parseCodeAgentCompletionReport,
+} from "../agents/code-agent.ts";
+import {
   appendTeamMailboxEntry,
   ensureTeamMailbox,
+  leaderCursorPath,
+  leaderInboxPath,
+  type MailboxEntry,
+  type MailboxPollController,
+  startMailboxPolling,
   TEAM_MAILBOX_SUBJECT_BROADCAST,
   TEAM_MAILBOX_SUBJECT_SEND,
   TEAM_MAILBOX_SUBJECT_STEER,
   teamMailboxInboxPath,
 } from "../agents/mailbox.ts";
+import { TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR } from "../agents/runtime-entry.ts";
+import { parseSimplifyAgentCompletionReport } from "../agents/simplify-agent.ts";
 import { validateTeamConfigValue } from "../config/loader.ts";
 import {
   expandTeamConfig,
@@ -62,10 +73,28 @@ type ManagedCodeAgentRecord = ManagedCodeAgent & {
   runtime: SpawnedChildRuntime;
 };
 
+type ManagedTaskAgentRecord = ManagedCodeAgent & {
+  taskId: string;
+  role: "simplify";
+  runtime: SpawnedChildRuntime;
+};
+
 type ActiveTeamRuntime = {
   snapshot: TeamSnapshot;
   sink: TeamLifecycleSink;
   codeAgents: Map<string, ManagedCodeAgentRecord>;
+  simplifyAgents: Map<string, ManagedTaskAgentRecord>;
+  simplifyDefinition: ResolvedAgentDef | undefined;
+  leaderMailboxPoller: MailboxPollController | undefined;
+  runtimeOptions: Pick<
+    StartTeamParams,
+    | "runtimeEntryPath"
+    | "execPath"
+    | "baseEnv"
+    | "supportsTypeScriptEntrypoints"
+    | "outputLimitBytes"
+    | "env"
+  >;
   paused: boolean;
   stopping: boolean;
 };
@@ -199,14 +228,29 @@ export class TeamManager {
 
     const sink = params.lifecycleSink ?? {};
     const loadResult = validateTeamConfigValue(params.snapshot.config);
-    const codeAgentDefinitions = expandTeamConfig(
-      loadResult.config,
-    ).agents.filter((definition) => definition.type === "code");
+    const expandedConfig = expandTeamConfig(loadResult.config);
+    const codeAgentDefinitions = expandedConfig.agents.filter(
+      (definition) => definition.type === "code",
+    );
+    const simplifyDefinition = expandedConfig.subAgents.find(
+      (definition) => definition.type === "simplify",
+    );
 
     const activeTeam: ActiveTeamRuntime = {
       snapshot: params.snapshot,
       sink,
       codeAgents: new Map(),
+      simplifyAgents: new Map(),
+      simplifyDefinition,
+      leaderMailboxPoller: undefined,
+      runtimeOptions: {
+        runtimeEntryPath: params.runtimeEntryPath,
+        execPath: params.execPath,
+        baseEnv: params.baseEnv,
+        supportsTypeScriptEntrypoints: params.supportsTypeScriptEntrypoints,
+        outputLimitBytes: params.outputLimitBytes,
+        env: params.env,
+      },
       paused: false,
       stopping: false,
     };
@@ -216,6 +260,26 @@ export class TeamManager {
 
     try {
       await ensureTeamMailbox(params.snapshot.name, "leader");
+      activeTeam.leaderMailboxPoller = startMailboxPolling({
+        inboxPath: leaderInboxPath(params.snapshot.name),
+        cursorPath: leaderCursorPath(params.snapshot.name),
+        env: {
+          ...process.env,
+          ...(params.env ?? {}),
+        },
+        handleEntry: async (entry) => {
+          await this.#handleLeaderMailboxEntry(activeTeam, entry);
+        },
+        onError: async (error) => {
+          if (activeTeam.stopping) {
+            return;
+          }
+
+          const message = formatLeaderMailboxError(error);
+          activeTeam.sink.addEvent?.(message);
+          activeTeam.sink.notify?.(message, "error");
+        },
+      });
 
       for (const definition of codeAgentDefinitions) {
         await ensureTeamMailbox(params.snapshot.name, definition.name);
@@ -273,6 +337,7 @@ export class TeamManager {
       };
     } catch (error) {
       activeTeam.stopping = true;
+      activeTeam.leaderMailboxPoller?.stop();
       await this.#stopRecords(activeTeam, [...activeTeam.codeAgents.values()]);
       this.#activeTeam = undefined;
       throw error;
@@ -287,9 +352,13 @@ export class TeamManager {
 
     activeTeam.stopping = true;
     activeTeam.sink.setTeamStatus?.("Stopping");
+    activeTeam.leaderMailboxPoller?.stop();
 
     const records = [...activeTeam.codeAgents.values()];
-    await this.#stopRecords(activeTeam, records);
+    await this.#stopRecords(activeTeam, [
+      ...records,
+      ...activeTeam.simplifyAgents.values(),
+    ]);
 
     const stoppedAgentCount = records.filter(
       (record) => record.status === "stopped",
@@ -470,9 +539,150 @@ export class TeamManager {
     });
   }
 
+  async #handleLeaderMailboxEntry(
+    activeTeam: ActiveTeamRuntime,
+    entry: MailboxEntry,
+  ): Promise<void> {
+    if (activeTeam.stopping) {
+      return;
+    }
+
+    if (isCodeAgentCompletionSubject(entry.subject)) {
+      let report: CodeAgentCompletionReport;
+      try {
+        report = parseCodeAgentCompletionReport(entry.message);
+      } catch (error: unknown) {
+        const message = formatInvalidLeaderMessage(
+          "code-agent completion",
+          error,
+        );
+        activeTeam.sink.addEvent?.(message);
+        activeTeam.sink.notify?.(message, "error");
+        return;
+      }
+
+      await this.#startSimplifyAgent(activeTeam, report);
+      return;
+    }
+
+    if (isSimplifyAgentCompletionSubject(entry.subject)) {
+      try {
+        const report = parseSimplifyAgentCompletionReport(entry.message);
+        activeTeam.sink.addEvent?.(
+          `Simplify agent ${report.agentName} completed task "${report.taskId}" with ${report.touchedFiles.length} touched file${pluralize(report.touchedFiles.length)}`,
+        );
+      } catch (error: unknown) {
+        const message = formatInvalidLeaderMessage(
+          "simplify-agent completion",
+          error,
+        );
+        activeTeam.sink.addEvent?.(message);
+        activeTeam.sink.notify?.(message, "error");
+      }
+    }
+  }
+
+  async #startSimplifyAgent(
+    activeTeam: ActiveTeamRuntime,
+    report: CodeAgentCompletionReport,
+  ): Promise<void> {
+    const definition = activeTeam.simplifyDefinition;
+    if (definition === undefined) {
+      activeTeam.sink.addEvent?.(
+        `Code agent ${report.agentName} completed task "${report.taskId}" but no simplify sub-agent is configured`,
+      );
+      return;
+    }
+
+    const existing = activeTeam.simplifyAgents.get(report.taskId);
+    if (
+      existing !== undefined &&
+      existing.status !== "stopped" &&
+      existing.status !== "crashed"
+    ) {
+      return;
+    }
+
+    const agentName = taskScopedAgentName(definition.name, report.taskId);
+    await ensureTeamMailbox(activeTeam.snapshot.name, agentName);
+
+    const runtime = this.#spawnChildRuntime({
+      role: "simplify",
+      teamName: activeTeam.snapshot.name,
+      agentName,
+      workspacePath: activeTeam.snapshot.workspacePath,
+      cwd: report.worktreePath,
+      taskId: report.taskId,
+      model: definition.model ?? activeTeam.snapshot.model,
+      thinkingLevel: resolveThinkingLevel(
+        definition,
+        activeTeam.snapshot.thinkingLevel,
+      ),
+      tools: resolveTools(definition),
+      env: {
+        ...(activeTeam.runtimeOptions.env ?? {}),
+        [TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR]: JSON.stringify(report),
+      },
+      runtimeEntryPath: activeTeam.runtimeOptions.runtimeEntryPath,
+      execPath: activeTeam.runtimeOptions.execPath,
+      baseEnv: activeTeam.runtimeOptions.baseEnv,
+      supportsTypeScriptEntrypoints:
+        activeTeam.runtimeOptions.supportsTypeScriptEntrypoints,
+      outputLimitBytes: activeTeam.runtimeOptions.outputLimitBytes,
+      expectedExitSignals: ["SIGINT", "SIGTERM"],
+    });
+
+    const record: ManagedTaskAgentRecord = {
+      name: agentName,
+      role: "simplify",
+      taskId: report.taskId,
+      pid: runtime.child.pid ?? undefined,
+      status: "running",
+      startedAt: this.#now().toISOString(),
+      runtime,
+    };
+    activeTeam.simplifyAgents.set(report.taskId, record);
+    activeTeam.sink.addEvent?.(
+      `Started simplify agent ${agentName}${formatPidSuffix(record.pid)} for task "${report.taskId}"`,
+    );
+    this.#trackSimplifyAgentCompletion(activeTeam, report.taskId, runtime);
+  }
+
+  #trackSimplifyAgentCompletion(
+    activeTeam: ActiveTeamRuntime,
+    taskId: string,
+    runtime: SpawnedChildRuntime,
+  ): void {
+    void runtime.completion.then((exit) => {
+      const record = activeTeam.simplifyAgents.get(taskId);
+      if (record === undefined) {
+        return;
+      }
+
+      record.exit = exit;
+      record.status = exit.crashed ? "crashed" : "stopped";
+
+      if (exit.crashed) {
+        const message = formatRuntimeCrashMessage("Simplify agent", exit);
+        activeTeam.sink.addEvent?.(message);
+        activeTeam.sink.notify?.(message, "error");
+        return;
+      }
+
+      if (!activeTeam.stopping) {
+        activeTeam.sink.addEvent?.(
+          `Simplify agent ${record.name} exited${formatExitReason(exit)}`,
+        );
+      }
+    });
+  }
+
   async #stopRecords(
     activeTeam: ActiveTeamRuntime,
-    records: ManagedCodeAgentRecord[],
+    records: Array<
+      | Pick<ManagedCodeAgentRecord, "status" | "runtime">
+      | Pick<ManagedTaskAgentRecord, "status" | "runtime">
+    >,
   ): Promise<void> {
     await Promise.all(
       records.map(async (record) => {
@@ -583,15 +793,22 @@ function resolveTools(definition: ResolvedAgentDef): ToolName[] {
 }
 
 function formatCrashMessage(exit: ChildRuntimeExit): string {
+  return formatRuntimeCrashMessage("Code agent", exit);
+}
+
+function formatRuntimeCrashMessage(
+  agentLabel: "Code agent" | "Simplify agent",
+  exit: ChildRuntimeExit,
+): string {
   const { agentName } = exit.metadata;
   const reason = formatExitReason(exit);
   const errorMessage = exit.error?.message;
 
   if (errorMessage !== undefined) {
-    return `Code agent ${agentName} crashed${reason}: ${errorMessage}`;
+    return `${agentLabel} ${agentName} crashed${reason}: ${errorMessage}`;
   }
 
-  return `Code agent ${agentName} crashed${reason}`;
+  return `${agentLabel} ${agentName} crashed${reason}`;
 }
 
 function formatExitReason(exit: ChildRuntimeExit): string {
@@ -608,4 +825,36 @@ function formatExitReason(exit: ChildRuntimeExit): string {
 
 function formatPidSuffix(pid: number | undefined): string {
   return pid === undefined ? "" : ` (pid ${pid})`;
+}
+
+function isCodeAgentCompletionSubject(subject: string): boolean {
+  return /^task-.+-coding-complete$/u.test(subject);
+}
+
+function isSimplifyAgentCompletionSubject(subject: string): boolean {
+  return /^task-.+-simplify-complete$/u.test(subject);
+}
+
+function taskScopedAgentName(baseName: string, taskId: string): string {
+  const sanitizedTaskId = taskId.replace(/[^A-Za-z0-9_-]+/gu, "-");
+  return `${baseName}-${sanitizedTaskId}`;
+}
+
+function formatInvalidLeaderMessage(
+  label: "code-agent completion" | "simplify-agent completion",
+  error: unknown,
+): string {
+  if (error instanceof Error) {
+    return `Failed to process ${label} message: ${error.message}`;
+  }
+
+  return `Failed to process ${label} message: ${String(error)}`;
+}
+
+function formatLeaderMailboxError(error: unknown): string {
+  if (error instanceof Error) {
+    return `Leader mailbox polling failed: ${error.message}`;
+  }
+
+  return `Leader mailbox polling failed: ${String(error)}`;
 }
