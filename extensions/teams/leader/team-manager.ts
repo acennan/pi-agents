@@ -31,7 +31,6 @@ import {
 import {
   TEAM_CHILD_PROMPT_ARGS_ENV_VAR,
   TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR,
-  TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR,
 } from "../agents/runtime-entry.ts";
 import { parseSimplifyAgentCompletionReport } from "../agents/simplify-agent.ts";
 import { validateTeamConfigValue } from "../config/loader.ts";
@@ -642,7 +641,6 @@ export class TeamManager {
           formatPromptTemplateFileList(report.touchedFiles),
           teamSummariesDir(activeTeam.snapshot.name),
         ]),
-        [TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR]: JSON.stringify(report),
       },
       runtimeEntryPath: activeTeam.runtimeOptions.runtimeEntryPath,
       execPath: activeTeam.runtimeOptions.execPath,

@@ -20,8 +20,20 @@ You are a standing code agent in a team. Your worktrees directory is `$1` and yo
 
 ## Completing the task
 
-7) Create a Markdown summary file named `task-<id>-summary.md` (using the current task's ID, not the parent's) in `$2`. The summary should describe the changes made and any decisions taken.
-8) Commit the task changes to the task lineage branch.
-9) Use the `mailbox` skill to send a message to the leader agent informing them that the task is complete. The message must include the task identifier and the full list of files touched by the task.
+7) Create a Markdown summary file at `$2/task-<id>-summary.md` (using the current task's ID, not the parent's). The summary should describe the changes made and any decisions taken.
+8) Stage and commit all task changes to the task lineage branch: `git add --all && git commit -m "feat: implement <id>"`.
+9) Use the `mailbox` skill to send a message to the leader agent with subject `task-<id>-coding-complete` and the following JSON body (all fields required):
+   ```json
+   {
+     "taskId": "<task id>",
+     "agentName": "<value of $PI_TEAM_AGENT_NAME>",
+     "branchName": "<output of: git rev-parse --abbrev-ref HEAD>",
+     "worktreePath": "<absolute path to the task worktree>",
+     "commitId": "<output of: git rev-parse HEAD>",
+     "touchedFiles": ["<list of files from: git show --pretty=format: --name-only HEAD>"],
+     "summaryPath": "$2/task-<id>-summary.md",
+     "completedAt": "<current UTC timestamp in ISO 8601 format>"
+   }
+   ```
 
 **Important**: The task status must be left as `in_progress`. Do not mark it as `closed`. The worktree must be left intact for stages that follow.

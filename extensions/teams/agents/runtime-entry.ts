@@ -34,7 +34,6 @@ import {
   type SupportedThinkingLevel,
 } from "../leader/create-team.ts";
 import type { ProcessRole } from "../roles.ts";
-import { parseCodeAgentCompletionReport } from "./code-agent.ts";
 import { installCodeAgentContextPruning } from "./context-pruning.ts";
 import {
   classifyMailboxEntryDelivery,
@@ -48,7 +47,6 @@ import {
   parsePromptTemplateArgs,
   renderSharedPromptTemplate,
 } from "./prompt-template.ts";
-import { completeSimplifyAgentTask } from "./simplify-agent.ts";
 
 export const TEAM_CHILD_RUNTIME_READY_EVENT = "team-child-ready";
 export const TEAM_CHILD_ROLE_ENV_VAR = "PI_TEAM_ROLE";
@@ -57,7 +55,6 @@ export const TEAM_CHILD_AGENT_NAME_ENV_VAR = "PI_TEAM_AGENT_NAME";
 export const TEAM_CHILD_TASK_ID_ENV_VAR = "PI_TEAM_TASK_ID";
 export const TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR = "PI_TEAM_PROMPT_TEMPLATE";
 export const TEAM_CHILD_PROMPT_ARGS_ENV_VAR = "PI_TEAM_PROMPT_ARGS";
-export const TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR = "PI_TEAM_SIMPLIFY_INPUT";
 
 export type MemberProcessRole = Exclude<ProcessRole, "leader">;
 
@@ -630,21 +627,9 @@ async function runRoleWork(
 async function defaultRunSimplifyTask(
   context: TeamChildRuntimeRunContext,
 ): Promise<void> {
-  const serializedReport = readRequiredRuntimeEnv(
-    context.args.env,
-    TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR,
+  await context.session.followUp(
+    "Begin the configured simplify pass for the assigned task.",
   );
-
-  await completeSimplifyAgentTask({
-    teamName: context.args.teamName,
-    agentName: context.args.agentName,
-    completion: parseCodeAgentCompletionReport(serializedReport),
-    session: context.session,
-    env: {
-      ...process.env,
-      ...context.args.env,
-    },
-  });
 }
 
 function installShutdownSignalHandlers(

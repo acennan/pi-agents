@@ -13,7 +13,6 @@ import {
 import {
   TEAM_CHILD_PROMPT_ARGS_ENV_VAR,
   TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR,
-  TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR,
 } from "../agents/runtime-entry.ts";
 import { simplifyAgentCompletionSubject } from "../agents/simplify-agent.ts";
 import type {
@@ -515,9 +514,6 @@ describe("TeamManager", () => {
         join(TEST_ROOT, "alpha", "summaries"),
       ]),
     );
-    expect(
-      simplifyRuntime.options.env?.[TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR],
-    ).toBe(JSON.stringify(completionReport));
     expect(lifecycleSink.addEvent).toHaveBeenCalledWith(
       'Started simplify agent simplify-1-pi-agents-7 (pid 4101) for task "pi-agents-7"',
     );
