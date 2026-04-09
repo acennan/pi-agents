@@ -10,7 +10,11 @@ import {
   readMailboxEntries,
   teamMailboxInboxPath,
 } from "../agents/mailbox.ts";
-import { TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR } from "../agents/runtime-entry.ts";
+import {
+  TEAM_CHILD_PROMPT_ARGS_ENV_VAR,
+  TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR,
+  TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR,
+} from "../agents/runtime-entry.ts";
 import { simplifyAgentCompletionSubject } from "../agents/simplify-agent.ts";
 import type {
   ChildRuntimeExit,
@@ -432,13 +436,20 @@ describe("TeamManager", () => {
 
     await manager.startTeam({
       snapshot: createSnapshot({
-        agents: [{ nameTemplate: "code", type: "code" }],
+        agents: [
+          {
+            nameTemplate: "code",
+            type: "code",
+            promptTemplate: "code-prompt.md",
+          },
+        ],
         subAgents: [
           {
             nameTemplate: "simplify",
             type: "simplify",
             maxAllowed: 1,
             tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
+            promptTemplate: "simplify-prompt.md",
           },
         ],
       }),
@@ -466,6 +477,21 @@ describe("TeamManager", () => {
 
     await waitFor(() => spawn.runtimes.length === 2, "simplify runtime spawn");
 
+    const codeRuntime = spawn.runtimes[0];
+    if (codeRuntime === undefined) {
+      throw new Error("Expected a code runtime");
+    }
+
+    expect(codeRuntime.options.env?.[TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR]).toBe(
+      "code-prompt.md",
+    );
+    expect(codeRuntime.options.env?.[TEAM_CHILD_PROMPT_ARGS_ENV_VAR]).toBe(
+      JSON.stringify([
+        "/workspace/project/.worktrees",
+        join(TEST_ROOT, "alpha", "summaries"),
+      ]),
+    );
+
     const simplifyRuntime = spawn.runtimes[1];
     if (simplifyRuntime === undefined) {
       throw new Error("Expected a simplify runtime");
@@ -478,6 +504,17 @@ describe("TeamManager", () => {
       workspacePath: "/workspace/project",
       cwd: "/workspace/project/.worktrees/task-pi-agents-7",
     });
+    expect(
+      simplifyRuntime.options.env?.[TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR],
+    ).toBe("simplify-prompt.md");
+    expect(simplifyRuntime.options.env?.[TEAM_CHILD_PROMPT_ARGS_ENV_VAR]).toBe(
+      JSON.stringify([
+        "pi-agents-7",
+        "/workspace/project/.worktrees/task-pi-agents-7",
+        "- src/example.ts",
+        join(TEST_ROOT, "alpha", "summaries"),
+      ]),
+    );
     expect(
       simplifyRuntime.options.env?.[TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR],
     ).toBe(JSON.stringify(completionReport));

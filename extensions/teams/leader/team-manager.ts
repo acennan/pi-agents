@@ -24,7 +24,15 @@ import {
   TEAM_MAILBOX_SUBJECT_STEER,
   teamMailboxInboxPath,
 } from "../agents/mailbox.ts";
-import { TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR } from "../agents/runtime-entry.ts";
+import {
+  formatPromptTemplateFileList,
+  serializePromptTemplateArgs,
+} from "../agents/prompt-template.ts";
+import {
+  TEAM_CHILD_PROMPT_ARGS_ENV_VAR,
+  TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR,
+  TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR,
+} from "../agents/runtime-entry.ts";
 import { parseSimplifyAgentCompletionReport } from "../agents/simplify-agent.ts";
 import { validateTeamConfigValue } from "../config/loader.ts";
 import {
@@ -35,6 +43,7 @@ import {
 } from "../config/schema.ts";
 import { pluralize } from "../pluralize.ts";
 import type { TeamSnapshot } from "../storage/team-home.ts";
+import { teamSummariesDir } from "../tasks/summaries.ts";
 import {
   type SupportedThinkingLevel,
   validateThinkingLevel,
@@ -295,7 +304,13 @@ export class TeamManager {
             params.snapshot.thinkingLevel,
           ),
           tools: resolveTools(definition),
-          env: { ...(params.env ?? {}) },
+          env: {
+            ...(params.env ?? {}),
+            ...buildPromptTemplateEnv(definition, [
+              params.snapshot.worktreeDir,
+              teamSummariesDir(params.snapshot.name),
+            ]),
+          },
           runtimeEntryPath: params.runtimeEntryPath,
           execPath: params.execPath,
           baseEnv: params.baseEnv,
@@ -621,6 +636,12 @@ export class TeamManager {
       tools: resolveTools(definition),
       env: {
         ...(activeTeam.runtimeOptions.env ?? {}),
+        ...buildPromptTemplateEnv(definition, [
+          report.taskId,
+          report.worktreePath,
+          formatPromptTemplateFileList(report.touchedFiles),
+          teamSummariesDir(activeTeam.snapshot.name),
+        ]),
         [TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR]: JSON.stringify(report),
       },
       runtimeEntryPath: activeTeam.runtimeOptions.runtimeEntryPath,
@@ -772,6 +793,20 @@ export class TeamManager {
       `Agent "${agentName}" is not active in team "${activeTeam.snapshot.name}".`,
     );
   }
+}
+
+function buildPromptTemplateEnv(
+  definition: ResolvedAgentDef,
+  promptArgs: readonly string[],
+): Record<string, string> {
+  if (definition.promptTemplate === undefined) {
+    return {};
+  }
+
+  return {
+    [TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR]: definition.promptTemplate,
+    [TEAM_CHILD_PROMPT_ARGS_ENV_VAR]: serializePromptTemplateArgs(promptArgs),
+  };
 }
 
 function resolveThinkingLevel(

@@ -1,3 +1,6 @@
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { getModels } from "@mariozechner/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +10,8 @@ import {
   deliverMailboxEntryToSession,
   parseTeamChildRuntimeArgs,
   runTeamChildRuntime,
+  TEAM_CHILD_PROMPT_ARGS_ENV_VAR,
+  TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR,
   TEAM_CHILD_RUNTIME_READY_EVENT,
   type TeamChildRuntimeReadyEvent,
 } from "../agents/runtime-entry.ts";
@@ -223,6 +228,164 @@ describe("bootstrapTeamChildRuntime", () => {
     ]);
     expect(result.session).toBe(session);
     expect(session.setFollowUpMode).toHaveBeenCalledWith("one-at-a-time");
+  });
+
+  it("loads the configured prompt template into the child session resources", async () => {
+    const model = requireModel("anthropic");
+    const session = {
+      agent: {},
+      dispose: vi.fn(),
+      followUp: vi.fn(),
+      setFollowUpMode: vi.fn(),
+      steer: vi.fn(),
+    };
+    const teamsRoot = join(
+      tmpdir(),
+      `pi-runtime-entry-prompt-${process.pid}-${Date.now()}`,
+    );
+    process.env.PI_TEAMS_ROOT = teamsRoot;
+    await mkdir(join(teamsRoot, "prompt-templates"), { recursive: true });
+    await writeFile(
+      join(teamsRoot, "prompt-templates", "code-prompt.md"),
+      [
+        "---",
+        "description: prompt",
+        "---",
+        "Worktrees: $1",
+        "Summaries: $2",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let loadedSystemPrompt: string | undefined;
+    const createSession = vi.fn(async (options) => {
+      await options.resourceLoader?.reload();
+      loadedSystemPrompt = options.resourceLoader?.getSystemPrompt();
+      return { session: session as never };
+    });
+
+    try {
+      await bootstrapTeamChildRuntime(
+        {
+          role: "code",
+          teamName: "alpha",
+          agentName: "code-1",
+          workspacePath: "/tmp/workspace",
+          cwd: "/tmp/workspace",
+          modelReference: `${model.provider}/${model.id}`,
+          thinkingLevel: "medium",
+          tools: ["read"],
+          env: {
+            [TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR]: "code-prompt.md",
+            [TEAM_CHILD_PROMPT_ARGS_ENV_VAR]: JSON.stringify([
+              "/tmp/worktrees",
+              "/tmp/summaries",
+            ]),
+          },
+        },
+        {
+          resolveModel: () => model,
+          createSession,
+          createTools: () => [],
+        },
+      );
+    } finally {
+      delete process.env.PI_TEAMS_ROOT;
+      await rm(teamsRoot, { recursive: true, force: true });
+    }
+
+    expect(loadedSystemPrompt).toBe(
+      "Worktrees: /tmp/worktrees\nSummaries: /tmp/summaries",
+    );
+  });
+
+  it("picks up updated prompt template contents for later child spawns", async () => {
+    const model = requireModel("anthropic");
+    const session = {
+      dispose: vi.fn(),
+      followUp: vi.fn(),
+      setFollowUpMode: vi.fn(),
+      steer: vi.fn(),
+    };
+    const teamsRoot = join(
+      tmpdir(),
+      `pi-runtime-entry-prompt-refresh-${process.pid}-${Date.now()}`,
+    );
+    const promptPath = join(
+      teamsRoot,
+      "prompt-templates",
+      "simplify-prompt.md",
+    );
+    process.env.PI_TEAMS_ROOT = teamsRoot;
+    await mkdir(join(teamsRoot, "prompt-templates"), { recursive: true });
+
+    const loadedPrompts: string[] = [];
+    const createSession = vi.fn(async (options) => {
+      await options.resourceLoader?.reload();
+      const systemPrompt = options.resourceLoader?.getSystemPrompt();
+      if (systemPrompt !== undefined) {
+        loadedPrompts.push(systemPrompt);
+      }
+      return { session: session as never };
+    });
+
+    try {
+      await writeFile(promptPath, "Version one: $1\n", "utf8");
+      await bootstrapTeamChildRuntime(
+        {
+          role: "simplify",
+          teamName: "alpha",
+          agentName: "simplify-1",
+          workspacePath: "/tmp/workspace",
+          cwd: "/tmp/workspace/task-1",
+          taskId: "pi-agents-1",
+          modelReference: `${model.provider}/${model.id}`,
+          thinkingLevel: "medium",
+          tools: ["read"],
+          env: {
+            [TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR]: "simplify-prompt.md",
+            [TEAM_CHILD_PROMPT_ARGS_ENV_VAR]: JSON.stringify(["pi-agents-1"]),
+          },
+        },
+        {
+          resolveModel: () => model,
+          createSession,
+          createTools: () => [],
+        },
+      );
+
+      await writeFile(promptPath, "Version two: $1\n", "utf8");
+      await bootstrapTeamChildRuntime(
+        {
+          role: "simplify",
+          teamName: "alpha",
+          agentName: "simplify-2",
+          workspacePath: "/tmp/workspace",
+          cwd: "/tmp/workspace/task-2",
+          taskId: "pi-agents-2",
+          modelReference: `${model.provider}/${model.id}`,
+          thinkingLevel: "medium",
+          tools: ["read"],
+          env: {
+            [TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR]: "simplify-prompt.md",
+            [TEAM_CHILD_PROMPT_ARGS_ENV_VAR]: JSON.stringify(["pi-agents-2"]),
+          },
+        },
+        {
+          resolveModel: () => model,
+          createSession,
+          createTools: () => [],
+        },
+      );
+    } finally {
+      delete process.env.PI_TEAMS_ROOT;
+      await rm(teamsRoot, { recursive: true, force: true });
+    }
+
+    expect(loadedPrompts).toEqual([
+      "Version one: pi-agents-1\n",
+      "Version two: pi-agents-2\n",
+    ]);
   });
 });
 

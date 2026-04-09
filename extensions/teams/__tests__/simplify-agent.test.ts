@@ -98,7 +98,7 @@ describe("completeSimplifyAgentTask", () => {
 
     expect(session.followUp).toHaveBeenCalledOnce();
     expect(session.followUp).toHaveBeenCalledWith(
-      expect.stringContaining("src/example.ts"),
+      "Begin the configured simplify pass for the assigned task.",
     );
     expect(calls).toEqual([
       ["add", "--all"],

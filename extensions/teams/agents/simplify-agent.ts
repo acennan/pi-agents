@@ -61,12 +61,7 @@ export async function completeSimplifyAgentTask(
   const worktreePath = resolve(options.completion.worktreePath);
 
   await options.session.followUp(
-    buildSimplifyPrompt({
-      taskId: options.completion.taskId,
-      branchName: options.completion.branchName,
-      worktreePath,
-      touchedFiles: options.completion.touchedFiles,
-    }),
+    "Begin the configured simplify pass for the assigned task.",
   );
 
   const commitResult = await commitSimplifyChanges({
@@ -170,30 +165,6 @@ export function parseSimplifyAgentCompletionReport(
     completedAt: readRequiredString(parsedValue, "completedAt"),
     changed: readRequiredBoolean(parsedValue, "changed"),
   };
-}
-
-function buildSimplifyPrompt(options: {
-  taskId: string;
-  branchName: string;
-  worktreePath: string;
-  touchedFiles: readonly string[];
-}): string {
-  const fileList =
-    options.touchedFiles.length === 0
-      ? "- none supplied"
-      : options.touchedFiles.map((file) => `- ${file}`).join("\n");
-
-  return [
-    `Run a code simplification pass for task "${options.taskId}" in worktree "${options.worktreePath}".`,
-    "",
-    "Apply the code-simplifier skill to the touched files below.",
-    "Preserve behaviour exactly. Improve clarity and maintainability only where it is useful.",
-    "Do not create commits or summary files yourself.",
-    `Branch: ${options.branchName}`,
-    "",
-    "Touched files:",
-    fileList,
-  ].join("\n");
 }
 
 function defaultSimplifySummaryMarkdown(options: {

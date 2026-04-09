@@ -23,6 +23,7 @@ import {
   createLsTool,
   createReadTool,
   createWriteTool,
+  DefaultResourceLoader,
   ModelRegistry,
   SessionManager,
   SettingsManager,
@@ -44,15 +45,18 @@ import {
   teamMailboxInboxPath,
 } from "./mailbox.ts";
 import {
-  completeSimplifyAgentTask,
-  type SimplifyAgentSessionLike,
-} from "./simplify-agent.ts";
+  parsePromptTemplateArgs,
+  renderSharedPromptTemplate,
+} from "./prompt-template.ts";
+import { completeSimplifyAgentTask } from "./simplify-agent.ts";
 
 export const TEAM_CHILD_RUNTIME_READY_EVENT = "team-child-ready";
 export const TEAM_CHILD_ROLE_ENV_VAR = "PI_TEAM_ROLE";
 export const TEAM_CHILD_TEAM_NAME_ENV_VAR = "PI_TEAM_NAME";
 export const TEAM_CHILD_AGENT_NAME_ENV_VAR = "PI_TEAM_AGENT_NAME";
 export const TEAM_CHILD_TASK_ID_ENV_VAR = "PI_TEAM_TASK_ID";
+export const TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR = "PI_TEAM_PROMPT_TEMPLATE";
+export const TEAM_CHILD_PROMPT_ARGS_ENV_VAR = "PI_TEAM_PROMPT_ARGS";
 export const TEAM_CHILD_SIMPLIFY_INPUT_ENV_VAR = "PI_TEAM_SIMPLIFY_INPUT";
 
 export type MemberProcessRole = Exclude<ProcessRole, "leader">;
@@ -325,13 +329,19 @@ export async function bootstrapTeamChildRuntime(
 
   const model = resolveModel(args.modelReference, modelRegistry);
   const tools = createTools(args.cwd, args.tools);
+  const settingsManager = SettingsManager.inMemory();
+  const resourceLoader = await createRuntimeResourceLoader(
+    args,
+    settingsManager,
+  );
   const { session } = await createSession({
     authStorage,
     cwd: args.cwd,
     model,
     modelRegistry,
+    resourceLoader,
     sessionManager: SessionManager.inMemory(args.cwd),
-    settingsManager: SettingsManager.inMemory(),
+    settingsManager,
     thinkingLevel: args.thinkingLevel,
     tools,
   });
@@ -629,7 +639,7 @@ async function defaultRunSimplifyTask(
     teamName: context.args.teamName,
     agentName: context.args.agentName,
     completion: parseCodeAgentCompletionReport(serializedReport),
-    session: context.session as SimplifyAgentSessionLike,
+    session: context.session,
     env: {
       ...process.env,
       ...context.args.env,
@@ -672,6 +682,44 @@ function formatRuntimeError(error: unknown): string {
   return String(error);
 }
 
+async function createRuntimeResourceLoader(
+  args: TeamChildRuntimeArgs,
+  settingsManager: SettingsManager,
+): Promise<CreateAgentSessionOptions["resourceLoader"] | undefined> {
+  const templateFileName = readOptionalRuntimeEnv(
+    args.env,
+    TEAM_CHILD_PROMPT_TEMPLATE_ENV_VAR,
+  );
+  if (templateFileName === undefined) {
+    return undefined;
+  }
+
+  const serializedPromptArgs =
+    readOptionalRuntimeEnv(args.env, TEAM_CHILD_PROMPT_ARGS_ENV_VAR) ?? "[]";
+
+  let systemPrompt: string;
+  try {
+    systemPrompt = await renderSharedPromptTemplate({
+      templateFileName,
+      args: parsePromptTemplateArgs(serializedPromptArgs),
+    });
+  } catch (error: unknown) {
+    throw new TeamChildRuntimeError(
+      "invalid-arg",
+      `Failed to load prompt template "${templateFileName}" for child runtime`,
+      { cause: error },
+    );
+  }
+
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: args.cwd,
+    settingsManager,
+    systemPrompt,
+  });
+  await resourceLoader.reload();
+  return resourceLoader;
+}
+
 function readRequiredRuntimeEnv(
   env: Record<string, string>,
   key: string,
@@ -685,6 +733,18 @@ function readRequiredRuntimeEnv(
     "missing-arg",
     `Missing required runtime environment value ${key}`,
   );
+}
+
+function readOptionalRuntimeEnv(
+  env: Record<string, string>,
+  key: string,
+): string | undefined {
+  const value = env[key];
+  if (value === undefined || value.trim().length === 0) {
+    return undefined;
+  }
+
+  return value;
 }
 
 function isMainModule(moduleUrl: string): boolean {
